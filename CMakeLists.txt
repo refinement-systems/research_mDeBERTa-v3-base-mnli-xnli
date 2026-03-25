@@ -4,6 +4,7 @@ project(nli LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(CheckLanguage)
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +17,7 @@ if (APPLE)
 else()
     option(NLI_ENABLE_COREML "Prefer CoreML on supported Apple builds" OFF)
 endif()
+option(NLI_BUILD_TESTS "Build nli unit tests" ON)
 
 set(NLI_USE_COREML OFF)
 if (APPLE AND NLI_ENABLE_COREML)
@@ -136,6 +138,34 @@ endif()
 
 if (UNIX AND NOT APPLE)
     target_link_libraries(nli PRIVATE m)
+endif()
+
+if (NLI_BUILD_TESTS)
+    enable_testing()
+
+    add_executable(nli_session_factory_test
+        tests/session_factory_test.cpp
+    )
+    target_include_directories(nli_session_factory_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include/onnxruntime/core/session
+    )
+
+    add_test(
+        NAME session_factory_test
+        COMMAND nli_session_factory_test
+    )
+
+    add_custom_target(nli_tests
+        DEPENDS nli_session_factory_test
+    )
+
+    add_custom_target(nli_check
+        COMMAND $<TARGET_FILE:nli_session_factory_test>
+        DEPENDS nli_session_factory_test
+        USES_TERMINAL
+    )
 endif()
 
 install(TARGETS nli
