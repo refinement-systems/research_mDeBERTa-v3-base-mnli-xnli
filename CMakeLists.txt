@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(nli LANGUAGES C CXX)
 
 include(GNUInstallDirs)
+include(CheckLanguage)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,9 +11,30 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
 
+if (APPLE)
+    option(NLI_ENABLE_COREML "Prefer CoreML on supported Apple builds" ON)
+else()
+    option(NLI_ENABLE_COREML "Prefer CoreML on supported Apple builds" OFF)
+endif()
+
+set(NLI_USE_COREML OFF)
+if (APPLE AND NLI_ENABLE_COREML)
+    set(NLI_USE_COREML ON)
+endif()
+
+if (NLI_USE_COREML)
+    check_language(OBJCXX)
+    if (CMAKE_OBJCXX_COMPILER)
+        enable_language(OBJCXX)
+    else()
+        message(FATAL_ERROR "CoreML support requires an Objective-C++ compiler.")
+    endif()
+endif()
+
 set(CMAKE_DISABLE_FIND_PACKAGE_ONNX TRUE)
 set(CMAKE_DISABLE_FIND_PACKAGE_onnx TRUE)
 set(protobuf_WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(onnxruntime_BUILD_OBJC OFF CACHE BOOL "" FORCE)
 set(onnxruntime_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(onnxruntime_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(onnxruntime_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
@@ -19,6 +42,7 @@ set(onnxruntime_BUILD_OPSCHEMA_LIB OFF CACHE BOOL "" FORCE)
 set(onnxruntime_DISABLE_RTTI OFF CACHE BOOL "" FORCE)
 set(onnxruntime_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
 set(onnxruntime_ENABLE_TRAINING OFF CACHE BOOL "" FORCE)
+set(onnxruntime_USE_COREML ${NLI_USE_COREML} CACHE BOOL "" FORCE)
 
 function(nli_prepare_absl_for_sentencepiece)
     if(NOT TARGET absl::base)
@@ -64,6 +88,9 @@ function(nli_prepare_protobuf_for_sentencepiece)
     endif()
 endfunction()
 
+set(_nli_saved_skip_install_rules "${CMAKE_SKIP_INSTALL_RULES}")
+set(CMAKE_SKIP_INSTALL_RULES TRUE)
+
 add_subdirectory(
     subprojects/onnxruntime/cmake
     ${CMAKE_BINARY_DIR}/subprojects/onnxruntime
@@ -90,12 +117,22 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
-add_executable(nli src/main.cpp)
+set(CMAKE_SKIP_INSTALL_RULES "${_nli_saved_skip_install_rules}")
+
+add_executable(nli
+    src/main.cpp
+    src/session_factory.cpp
+)
 target_include_directories(nli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include/onnxruntime/core/session
     ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/sentencepiece/src
 )
 target_link_libraries(nli PRIVATE onnxruntime sentencepiece)
+
+if (NLI_USE_COREML)
+    target_compile_definitions(nli PRIVATE NLI_HAS_COREML_PROVIDER=1)
+endif()
 
 if (UNIX AND NOT APPLE)
     target_link_libraries(nli PRIVATE m)

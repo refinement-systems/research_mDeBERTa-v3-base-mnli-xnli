@@ -1,4 +1,6 @@
-#include <onnxruntime_cxx_api.h>
+#include "session_factory.h"
+
+#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <sentencepiece_processor.h>
 
 #include <algorithm>
@@ -179,13 +181,9 @@ int main() {
             1, static_cast<int64_t>(encoded.input_ids.size())
         };
 
-        // ONNX Runtime setup.
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mdeberta_nli");
-        Ort::SessionOptions session_options;
-        session_options.SetIntraOpNumThreads(1);
-        session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-
-        Ort::Session session(env, model_path.c_str(), session_options);
+        auto session_result = nli::CreateInferenceSession(env, model_path, std::cerr);
+        Ort::Session session = std::move(session_result.value);
         Ort::AllocatorWithDefaultOptions allocator;
         Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(
             OrtArenaAllocator, OrtMemTypeDefault);
