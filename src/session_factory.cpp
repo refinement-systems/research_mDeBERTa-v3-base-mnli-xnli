@@ -33,11 +33,19 @@ Ort::Session CreateCoreMLSession(const Ort::Env& env, const std::string& model_p
 SessionCreationResult<Ort::Session> CreateInferenceSession(
     const Ort::Env& env,
     const std::string& model_path,
+    SessionBackend backend,
     std::ostream& log) {
+    auto result = CreateSessionForBackend(
+        backend,
 #if defined(NLI_HAS_COREML_PROVIDER)
-    auto result = CreateSessionWithPreferredBackend(
         true,
         [&]() { return CreateCoreMLSession(env, model_path); },
+#else
+        false,
+        []() -> Ort::Session {
+            throw std::invalid_argument("CoreML backend is not available in this build.");
+        },
+#endif
         [&]() { return CreateCpuSession(env, model_path); },
         log);
 
@@ -48,15 +56,13 @@ SessionCreationResult<Ort::Session> CreateInferenceSession(
     log << "\n";
 
     return result;
-#else
-    auto session = CreateCpuSession(env, model_path);
-    log << "Using ONNX Runtime backend: " << SessionBackendName(SessionBackend::kCPU) << "\n";
-    return SessionCreationResult<Ort::Session>{
-        std::move(session),
-        SessionBackend::kCPU,
-        false,
-    };
-#endif
+}
+
+SessionCreationResult<Ort::Session> CreateInferenceSession(
+    const Ort::Env& env,
+    const std::string& model_path,
+    std::ostream& log) {
+    return CreateInferenceSession(env, model_path, DefaultSessionBackend(), log);
 }
 
 }  // namespace nli

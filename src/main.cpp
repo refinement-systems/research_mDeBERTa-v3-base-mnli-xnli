@@ -1,3 +1,4 @@
+#include "optparse.h"
 #include "session_factory.h"
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
@@ -156,10 +157,53 @@ std::vector<const char*> GetOutputNames(
     return names;
 }
 
+std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
+    std::string joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            joined += separator;
+        }
+        joined += values[i];
+    }
+    return joined;
+}
+
+struct CommandLineOptions {
+    nli::SessionBackend backend;
+};
+
+CommandLineOptions ParseCommandLine(int argc, char* argv[]) {
+    const std::vector<std::string> available_backends = nli::AvailableSessionBackendOptionNames();
+
+    optparse::OptionParser parser;
+    parser.usage("%prog [options]");
+    parser.description("Run the NLI example.");
+
+    parser.add_option("-b", "--backend")
+        .dest("backend")
+        .metavar("BACKEND")
+        .choices(available_backends.begin(), available_backends.end())
+        .set_default(nli::SessionBackendOptionName(nli::DefaultSessionBackend()))
+        .help(
+            "preferred execution backend (available: " +
+            JoinStrings(available_backends, ", ") +
+            "; default: %default)");
+
+    const optparse::Values& options = parser.parse_args(argc, argv);
+    if (!parser.args().empty()) {
+        parser.error("unexpected positional arguments");
+    }
+
+    return CommandLineOptions{
+        nli::ParseSessionBackendOption(options["backend"]),
+    };
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
+        const CommandLineOptions options = ParseCommandLine(argc, argv);
         const std::string model_path = "models/mdeberta/onnx/model_quantized.onnx";
         const std::string spm_path   = "models/mdeberta/spm.model";
 
@@ -182,7 +226,7 @@ int main() {
         };
 
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "mdeberta_nli");
-        auto session_result = nli::CreateInferenceSession(env, model_path, std::cerr);
+        auto session_result = nli::CreateInferenceSession(env, model_path, options.backend, std::cerr);
         Ort::Session session = std::move(session_result.value);
         Ort::AllocatorWithDefaultOptions allocator;
         Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(
