@@ -1,0 +1,6 @@
+[submodule "subprojects/onnxruntime"]
+	path = subprojects/onnxruntime
+	url = https://github.com/microsoft/onnxruntime
+[submodule "subprojects/sentencepiece"]
+	path = subprojects/sentencepiece
+	url = https://github.com/google/sentencepiece.git

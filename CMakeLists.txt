@@ -1,0 +1,60 @@
+cmake_minimum_required(VERSION 3.28)
+project(nli LANGUAGES C CXX)
+
+include(GNUInstallDirs)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+
+set(CMAKE_DISABLE_FIND_PACKAGE_ONNX TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_onnx TRUE)
+set(protobuf_WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(onnxruntime_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(onnxruntime_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(onnxruntime_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+set(onnxruntime_BUILD_OPSCHEMA_LIB OFF CACHE BOOL "" FORCE)
+set(onnxruntime_DISABLE_RTTI OFF CACHE BOOL "" FORCE)
+set(onnxruntime_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+set(onnxruntime_ENABLE_TRAINING OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(
+    subprojects/onnxruntime/cmake
+    ${CMAKE_BINARY_DIR}/subprojects/onnxruntime
+    EXCLUDE_FROM_ALL
+)
+
+if (DEFINED CMAKE_FIND_PACKAGE_REDIRECTS_DIR AND EXISTS "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
+    list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
+endif()
+
+set(SPM_ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+set(SPM_ENABLE_TCMALLOC OFF CACHE BOOL "" FORCE)
+set(SPM_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(SPM_ABSL_PROVIDER package CACHE STRING "" FORCE)
+set(SPM_PROTOBUF_PROVIDER package CACHE STRING "" FORCE)
+set(SPM_USE_BUILTIN_PROTOBUF OFF CACHE BOOL "" FORCE)
+
+add_subdirectory(
+    subprojects/sentencepiece
+    ${CMAKE_BINARY_DIR}/subprojects/sentencepiece
+    EXCLUDE_FROM_ALL
+)
+
+add_executable(nli src/main.cpp)
+target_include_directories(nli PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include/onnxruntime/core/session
+    ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/sentencepiece/src
+)
+target_link_libraries(nli PRIVATE onnxruntime sentencepiece)
+
+if (UNIX AND NOT APPLE)
+    target_link_libraries(nli PRIVATE m)
+endif()
+
+install(TARGETS nli
+    COMPONENT runtime
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
