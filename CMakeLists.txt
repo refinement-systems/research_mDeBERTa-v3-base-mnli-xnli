@@ -20,11 +20,58 @@ set(onnxruntime_DISABLE_RTTI OFF CACHE BOOL "" FORCE)
 set(onnxruntime_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
 set(onnxruntime_ENABLE_TRAINING OFF CACHE BOOL "" FORCE)
 
+function(nli_prepare_absl_for_sentencepiece)
+    if(NOT TARGET absl::base)
+        return()
+    endif()
+
+    set(_nli_absl_shim_dir "${CMAKE_BINARY_DIR}/cmake/package-shims/absl")
+    file(MAKE_DIRECTORY "${_nli_absl_shim_dir}")
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/absl-compat-config.cmake.in"
+        "${_nli_absl_shim_dir}/abslConfig.cmake"
+        COPYONLY
+    )
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/absl-compat-config.cmake.in"
+        "${_nli_absl_shim_dir}/absl-config.cmake"
+        COPYONLY
+    )
+
+    set(absl_DIR "${_nli_absl_shim_dir}" CACHE PATH
+        "Path to the local absl compatibility shim used by SentencePiece" FORCE
+    )
+endfunction()
+
+function(nli_prepare_protobuf_for_sentencepiece)
+    if(TARGET protobuf::protoc)
+        return()
+    endif()
+
+    if(TARGET protoc)
+        add_executable(protobuf::protoc ALIAS protoc)
+        return()
+    endif()
+
+    set(_nli_protoc_path
+        "${CMAKE_BINARY_DIR}/_deps/protoc_binary-src/bin/protoc${CMAKE_EXECUTABLE_SUFFIX}"
+    )
+    if(EXISTS "${_nli_protoc_path}")
+        add_executable(protobuf::protoc IMPORTED GLOBAL)
+        set_target_properties(protobuf::protoc PROPERTIES
+            IMPORTED_LOCATION "${_nli_protoc_path}"
+        )
+    endif()
+endfunction()
+
 add_subdirectory(
     subprojects/onnxruntime/cmake
     ${CMAKE_BINARY_DIR}/subprojects/onnxruntime
     EXCLUDE_FROM_ALL
 )
+
+nli_prepare_absl_for_sentencepiece()
+nli_prepare_protobuf_for_sentencepiece()
 
 if (DEFINED CMAKE_FIND_PACKAGE_REDIRECTS_DIR AND EXISTS "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")
     list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_FIND_PACKAGE_REDIRECTS_DIR}")

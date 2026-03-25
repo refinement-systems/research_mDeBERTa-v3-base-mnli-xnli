@@ -1,0 +1,24 @@
+if(NOT TARGET absl::base)
+  message(FATAL_ERROR "Expected absl::base to be defined before loading the local absl shim")
+endif()
+get_target_property(_nli_absl_include_dirs absl::base INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(_nli_absl_base_target absl::base ALIASED_TARGET)
+if(NOT _nli_absl_base_target)
+  set(_nli_absl_base_target absl::base)
+endif()
+foreach(_nli_absl_include_dir IN LISTS _nli_absl_include_dirs)
+  if(_nli_absl_include_dir MATCHES "^\\$<BUILD_INTERFACE:([^>]+)>$")
+    set(_nli_absl_build_include_dir "${CMAKE_MATCH_1}")
+    break()
+  endif()
+endforeach()
+if(DEFINED _nli_absl_build_include_dir AND
+   NOT _nli_absl_build_include_dir IN_LIST _nli_absl_include_dirs)
+  list(APPEND _nli_absl_include_dirs "${_nli_absl_build_include_dir}")
+  set_target_properties("${_nli_absl_base_target}" PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_nli_absl_include_dirs}"
+  )
+endif()
+set(absl_FOUND TRUE)
+set(ABSL_FOUND TRUE)
+
