@@ -1,0 +1,49 @@
+{
+  "t_bbbbbbbb-0000-0000-0000-000000000000": {
+    "article_url": "https://example.com/b",
+    "config": "C",
+    "content": [
+      {
+        "message": "Are you following the launch?",
+        "agent": "agent_1",
+        "sentiment": "Curious to dive deeper",
+        "knowledge_source": [
+          "FS1"
+        ],
+        "turn_rating": "Good"
+      },
+      {
+        "message": "I read the mission update this morning.",
+        "agent": "agent_2",
+        "sentiment": "Happy",
+        "knowledge_source": [
+          "FS1"
+        ],
+        "turn_rating": "Excellent"
+      }
+    ],
+    "conversation_rating": {
+      "agent_1": "Good",
+      "agent_2": "Excellent"
+    }
+  },
+  "t_aaaaaaaa-0000-0000-0000-000000000000": {
+    "article_url": "https://example.com/a",
+    "config": "D",
+    "content": [
+      {
+        "message": "That sounds risky.",
+        "agent": "agent_1",
+        "sentiment": "Surprised",
+        "knowledge_source": [
+          "AS1"
+        ],
+        "turn_rating": "Good"
+      }
+    ],
+    "conversation_rating": {
+      "agent_1": "Good",
+      "agent_2": "Good"
+    }
+  }
+}

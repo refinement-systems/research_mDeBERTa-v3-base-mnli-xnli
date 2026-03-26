@@ -121,24 +121,37 @@ add_subdirectory(
 
 set(CMAKE_SKIP_INSTALL_RULES "${_nli_saved_skip_install_rules}")
 
-add_executable(nli
-    src/main.cpp
+add_library(nli_common
+    src/command_line.cpp
+    src/nli_inference.cpp
     src/session_factory.cpp
+    src/topical_chat.cpp
 )
-target_include_directories(nli PRIVATE
+target_include_directories(nli_common PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include/onnxruntime/core/session
     ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/sentencepiece/src
 )
-target_link_libraries(nli PRIVATE onnxruntime sentencepiece)
+target_link_libraries(nli_common PUBLIC onnxruntime sentencepiece nlohmann_json::nlohmann_json)
 
 if (NLI_USE_COREML)
-    target_compile_definitions(nli PRIVATE NLI_HAS_COREML_PROVIDER=1)
+    target_compile_definitions(nli_common PUBLIC NLI_HAS_COREML_PROVIDER=1)
 endif()
 
 if (UNIX AND NOT APPLE)
-    target_link_libraries(nli PRIVATE m)
+    target_link_libraries(nli_common PUBLIC m)
 endif()
+
+add_executable(nli
+    src/main.cpp
+)
+target_link_libraries(nli PRIVATE nli_common)
+
+add_executable(nli-topical-chat
+    src/topical_chat_main.cpp
+)
+target_link_libraries(nli-topical-chat PRIVATE nli_common)
 
 if (NLI_BUILD_TESTS)
     enable_testing()
@@ -146,29 +159,38 @@ if (NLI_BUILD_TESTS)
     add_executable(nli_session_factory_test
         tests/session_factory_test.cpp
     )
-    target_include_directories(nli_session_factory_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/subprojects/onnxruntime/include/onnxruntime/core/session
+    target_link_libraries(nli_session_factory_test PRIVATE nli_common)
+
+    add_executable(nli_topical_chat_test
+        tests/topical_chat_test.cpp
+    )
+    target_link_libraries(nli_topical_chat_test PRIVATE nli_common)
+    target_compile_definitions(nli_topical_chat_test PRIVATE
+        NLI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
 
     add_test(
         NAME session_factory_test
         COMMAND nli_session_factory_test
     )
+    add_test(
+        NAME topical_chat_test
+        COMMAND nli_topical_chat_test
+    )
 
     add_custom_target(nli_tests
-        DEPENDS nli_session_factory_test
+        DEPENDS nli_session_factory_test nli_topical_chat_test
     )
 
     add_custom_target(nli_check
         COMMAND $<TARGET_FILE:nli_session_factory_test>
-        DEPENDS nli_session_factory_test
+        COMMAND $<TARGET_FILE:nli_topical_chat_test>
+        DEPENDS nli_session_factory_test nli_topical_chat_test
         USES_TERMINAL
     )
 endif()
 
-install(TARGETS nli
+install(TARGETS nli nli-topical-chat
     COMPONENT runtime
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
