@@ -9,10 +9,12 @@ namespace nli {
 
 struct ExampleCommandLineOptions {
     SessionBackend backend;
+    std::string model_path;
 };
 
 struct TopicalChatCommandLineOptions {
     SessionBackend backend;
+    std::string model_path;
     std::string input_path;
 };
 

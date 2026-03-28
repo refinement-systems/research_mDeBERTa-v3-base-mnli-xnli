@@ -1,4 +1,5 @@
 #include "command_line.h"
+#include "nli_inference.h"
 
 #include <string>
 #include <vector>
@@ -30,6 +31,14 @@ void AddBackendOption(optparse::OptionParser& parser) {
             "; default: %default)");
 }
 
+void AddModelOption(optparse::OptionParser& parser) {
+    parser.add_option("-m", "--model")
+        .dest("model")
+        .metavar("PATH")
+        .set_default(nli::DefaultModelPath())
+        .help("path to ONNX model file (default: %default)");
+}
+
 }  // namespace
 
 namespace nli {
@@ -38,6 +47,7 @@ void ConfigureExampleOptionParser(optparse::OptionParser& parser) {
     parser.usage("%prog [options]");
     parser.description("Run the NLI example.");
     AddBackendOption(parser);
+    AddModelOption(parser);
 }
 
 optparse::OptionParser BuildExampleOptionParser() {
@@ -55,6 +65,7 @@ ExampleCommandLineOptions FinalizeExampleCommandLine(
 
     return ExampleCommandLineOptions{
         ParseSessionBackendOption(options["backend"]),
+        options["model"],
     };
 }
 
@@ -68,6 +79,7 @@ void ConfigureTopicalChatOptionParser(optparse::OptionParser& parser) {
     parser.usage("%prog [options] INPUT_JSON");
     parser.description("Run the DeBERTa NLI model over every Topical Chat dialog turn.");
     AddBackendOption(parser);
+    AddModelOption(parser);
 }
 
 optparse::OptionParser BuildTopicalChatOptionParser() {
@@ -85,6 +97,7 @@ TopicalChatCommandLineOptions FinalizeTopicalChatCommandLine(
 
     return TopicalChatCommandLineOptions{
         ParseSessionBackendOption(options["backend"]),
+        options["model"],
         parser.args().front(),
     };
 }

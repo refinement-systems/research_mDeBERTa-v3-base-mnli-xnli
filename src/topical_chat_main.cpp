@@ -11,7 +11,7 @@ int main(int argc, char* argv[]) {
         const auto turns = nli::ReadTopicalChatTurnInputs(options.input_path);
 
         nli::DebertaNliModel model(
-            nli::DefaultModelPath(),
+            options.model_path,
             nli::DefaultSentencePieceModelPath(),
             options.backend,
             std::cerr);

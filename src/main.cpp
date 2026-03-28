@@ -12,7 +12,7 @@ int main(int argc, char* argv[]) {
         const std::string hypothesis =
             "Emmanuel Macron is the President of France";
         nli::DebertaNliModel model(
-            nli::DefaultModelPath(),
+            options.model_path,
             nli::DefaultSentencePieceModelPath(),
             options.backend,
             std::cerr);
