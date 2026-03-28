@@ -25,6 +25,16 @@ int main(int argc, char* argv[]) {
             nli::DefaultSentencePieceModelPath(),
             options.backend,
             std::cerr);
+        if (options.dump_special_token_ids) {
+            const auto special_token_ids = model.GetSpecialTokenIds();
+            std::cout << "special_token_ids:"
+                      << " pad=" << special_token_ids.pad
+                      << " cls=" << special_token_ids.cls
+                      << " sep=" << special_token_ids.sep
+                      << " unk=" << special_token_ids.unk
+                      << " mask=" << special_token_ids.mask
+                      << "\n";
+        }
         if (options.dump_encoding) {
             const nli::EncodedInputs encoded = model.Encode(options.premise, options.hypothesis);
             std::cout << "normalized_premise: " << encoded.normalized_premise << "\n";

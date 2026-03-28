@@ -210,6 +210,16 @@ EncodedInputs DebertaNliModel::Encode(const std::string& premise, const std::str
     };
 }
 
+TokenizerSpecialTokenIds DebertaNliModel::GetSpecialTokenIds() const {
+    return TokenizerSpecialTokenIds{
+        sp_.PieceToId("[PAD]"),
+        sp_.PieceToId("[CLS]"),
+        sp_.PieceToId("[SEP]"),
+        sp_.PieceToId("[UNK]"),
+        sp_.PieceToId("[MASK]"),
+    };
+}
+
 NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {
     EncodedInputs encoded = Encode(premise, hypothesis);
     const std::array<int64_t, 2> input_shape = {

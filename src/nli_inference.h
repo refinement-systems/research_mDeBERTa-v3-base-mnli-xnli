@@ -27,6 +27,14 @@ struct EncodedInputs {
     std::vector<int64_t> token_type_ids;
 };
 
+struct TokenizerSpecialTokenIds {
+    int64_t pad;
+    int64_t cls;
+    int64_t sep;
+    int64_t unk;
+    int64_t mask;
+};
+
 inline constexpr std::array<std::string_view, 3> kNliScoreLabels = {
     "entailment",
     "neutral",
@@ -47,6 +55,7 @@ public:
         std::ostream& log);
 
     EncodedInputs Encode(const std::string& premise, const std::string& hypothesis);
+    TokenizerSpecialTokenIds GetSpecialTokenIds() const;
     NliScores Predict(const std::string& premise, const std::string& hypothesis);
 
 private:

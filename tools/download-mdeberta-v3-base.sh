@@ -16,6 +16,14 @@ readonly default_files=(
     "onnx/model_quantized.onnx"
 )
 
+readonly tokenizer_asset_files=(
+    "added_tokens.json"
+    "config.json"
+    "special_tokens_map.json"
+    "tokenizer.json"
+    "tokenizer_config.json"
+)
+
 usage() {
     cat <<EOF
 Usage: tools/download-mdeberta-v3-base.sh [options] [FILE...]
@@ -28,12 +36,15 @@ Without positional FILE arguments, the script downloads:
 
 Options:
   --dir PATH   Override the output directory.
+  --tokenizer-assets
+               Download tokenizer.json and related tokenizer metadata files.
   --force      Re-download files even if they already exist locally.
   --help       Show this help text.
 
 Examples:
   tools/download-mdeberta-v3-base.sh
   tools/download-mdeberta-v3-base.sh --force
+  tools/download-mdeberta-v3-base.sh --tokenizer-assets
   tools/download-mdeberta-v3-base.sh spm.model onnx/model.onnx
 EOF
 }
@@ -68,6 +79,10 @@ while [[ $# -gt 0 ]]; do
             fi
             output_dir="$2"
             shift 2
+            ;;
+        --tokenizer-assets)
+            files+=("${tokenizer_asset_files[@]}")
+            shift
             ;;
         --force)
             force=1

@@ -170,6 +170,9 @@ void VerifyExampleOptionsAcceptExplicitModelPath() {
     if (options.dump_encoding) {
         throw std::runtime_error("expected dump encoding to default to false");
     }
+    if (options.dump_special_token_ids) {
+        throw std::runtime_error("expected special token dump to default to false");
+    }
 }
 
 void VerifyExampleOptionsDefaultModelPath() {
@@ -207,6 +210,22 @@ void VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag() {
     }
     if (!options.dump_encoding) {
         throw std::runtime_error("expected dump encoding flag to be enabled");
+    }
+    if (options.dump_special_token_ids) {
+        throw std::runtime_error("expected special token dump to remain disabled");
+    }
+}
+
+void VerifyExampleOptionsAcceptSpecialTokenDumpFlag() {
+    auto parser = MakeExampleParser();
+    const std::vector<std::string> args = {
+        "--dump-special-token-ids",
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeExampleCommandLine(parser, values);
+
+    if (!options.dump_special_token_ids) {
+        throw std::runtime_error("expected special token dump flag to be enabled");
     }
 }
 
@@ -325,6 +344,7 @@ int main() {
     VerifyExampleOptionsAcceptExplicitModelPath();
     VerifyExampleOptionsDefaultModelPath();
     VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag();
+    VerifyExampleOptionsAcceptSpecialTokenDumpFlag();
     VerifyExampleOptionsRejectUnexpectedPositionalArgs();
     VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling();
     VerifyEvalFixtureParsingPreservesRows();

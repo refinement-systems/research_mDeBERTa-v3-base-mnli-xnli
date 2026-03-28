@@ -65,6 +65,14 @@ void AddDumpEncodingOption(optparse::OptionParser& parser) {
         .help("print normalized text and encoded model inputs before inference");
 }
 
+void AddDumpSpecialTokenIdsOption(optparse::OptionParser& parser) {
+    parser.add_option("--dump-special-token-ids")
+        .dest("dump_special_token_ids")
+        .action("store_true")
+        .set_default(false)
+        .help("print SentencePiece ids for the known special tokens");
+}
+
 void AddCompareModelOption(optparse::OptionParser& parser) {
     parser.add_option("--compare-model")
         .dest("compare_model")
@@ -109,6 +117,7 @@ void ConfigureExampleOptionParser(optparse::OptionParser& parser) {
     AddPremiseOption(parser);
     AddHypothesisOption(parser);
     AddDumpEncodingOption(parser);
+    AddDumpSpecialTokenIdsOption(parser);
 }
 
 optparse::OptionParser BuildExampleOptionParser() {
@@ -130,6 +139,7 @@ ExampleCommandLineOptions FinalizeExampleCommandLine(
         options["premise"],
         options["hypothesis"],
         options.is_set_by_user("dump_encoding"),
+        options.is_set_by_user("dump_special_token_ids"),
     };
 }
 
