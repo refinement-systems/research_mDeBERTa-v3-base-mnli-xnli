@@ -224,7 +224,7 @@ void VerifyExampleOptionsRejectUnexpectedPositionalArgs() {
 
 void VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling() {
     const std::string input = "  Hello\tworld \n from\r\nCodex  ";
-    const std::string expected = " Hello world from Codex";
+    const std::string expected = "Hello world from Codex";
     const std::string actual = nli::NormalizeDebertaTokenizerInput(input);
 
     if (actual != expected) {

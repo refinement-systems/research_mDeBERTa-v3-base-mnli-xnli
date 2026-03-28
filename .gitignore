@@ -2,4 +2,5 @@ bin/*
 builddir/*
 models/*
 !models/.keep
+tools/__pycache__/*
 
