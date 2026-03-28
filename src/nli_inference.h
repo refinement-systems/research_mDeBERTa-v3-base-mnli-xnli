@@ -14,6 +14,12 @@
 
 namespace nli {
 
+struct NliLogits {
+    float entailment;
+    float neutral;
+    float contradiction;
+};
+
 struct NliScores {
     float entailment;
     float neutral;
@@ -37,6 +43,8 @@ inline constexpr std::array<std::string_view, 3> kNliScoreLabels = {
 const char* DefaultModelPath();
 const char* DefaultSentencePieceModelPath();
 
+NliScores ScoresFromLogits(const NliLogits& logits);
+std::string_view PredictedLabel(const NliLogits& logits);
 std::string_view PredictedLabel(const NliScores& scores);
 
 class DebertaNliModel {
@@ -49,6 +57,7 @@ public:
 
     EncodedInputs Encode(const std::string& premise, const std::string& hypothesis);
     TokenizerSpecialTokenIds GetSpecialTokenIds() const;
+    NliLogits PredictLogits(const std::string& premise, const std::string& hypothesis);
     NliScores Predict(const std::string& premise, const std::string& hypothesis);
 
 private:

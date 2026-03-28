@@ -65,6 +65,14 @@ void AddDumpEncodingOption(optparse::OptionParser& parser) {
         .help("print normalized text and encoded model inputs before inference");
 }
 
+void AddDumpLogitsOption(optparse::OptionParser& parser) {
+    parser.add_option("--dump-logits")
+        .dest("dump_logits")
+        .action("store_true")
+        .set_default(false)
+        .help("print raw model logits before softmax");
+}
+
 void AddDumpSpecialTokenIdsOption(optparse::OptionParser& parser) {
     parser.add_option("--dump-special-token-ids")
         .dest("dump_special_token_ids")
@@ -117,6 +125,7 @@ void ConfigureExampleOptionParser(optparse::OptionParser& parser) {
     AddPremiseOption(parser);
     AddHypothesisOption(parser);
     AddDumpEncodingOption(parser);
+    AddDumpLogitsOption(parser);
     AddDumpSpecialTokenIdsOption(parser);
 }
 
@@ -139,6 +148,7 @@ ExampleCommandLineOptions FinalizeExampleCommandLine(
         options["premise"],
         options["hypothesis"],
         options.is_set_by_user("dump_encoding"),
+        options.is_set_by_user("dump_logits"),
         options.is_set_by_user("dump_special_token_ids"),
     };
 }

@@ -119,6 +119,19 @@ nli::NliScores SoftmaxScores(const float* logits, size_t n) {
     };
 }
 
+}  // namespace
+
+namespace nli {
+
+NliScores ScoresFromLogits(const NliLogits& logits) {
+    const std::array<float, 3> values = {
+        logits.entailment,
+        logits.neutral,
+        logits.contradiction,
+    };
+    return SoftmaxScores(values.data(), values.size());
+}
+
 std::vector<const char*> GetInputNames(
     Ort::Session& session,
     Ort::AllocatorWithDefaultOptions& allocator,
@@ -165,10 +178,6 @@ std::vector<const char*> GetOutputNames(
     return names;
 }
 
-}  // namespace
-
-namespace nli {
-
 const char* DefaultModelPath() {
     return "models/mdeberta/onnx/model_quantized.onnx";
 }
@@ -182,6 +191,17 @@ std::string_view PredictedLabel(const NliScores& scores) {
         scores.entailment,
         scores.neutral,
         scores.contradiction,
+    };
+    auto best_it = std::max_element(values.begin(), values.end());
+    const size_t best_idx = static_cast<size_t>(std::distance(values.begin(), best_it));
+    return kNliScoreLabels[best_idx];
+}
+
+std::string_view PredictedLabel(const NliLogits& logits) {
+    const std::array<float, 3> values = {
+        logits.entailment,
+        logits.neutral,
+        logits.contradiction,
     };
     auto best_it = std::max_element(values.begin(), values.end());
     const size_t best_idx = static_cast<size_t>(std::distance(values.begin(), best_it));
@@ -226,6 +246,12 @@ TokenizerSpecialTokenIds DebertaNliModel::GetSpecialTokenIds() const {
 }
 
 NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {
+    return ScoresFromLogits(PredictLogits(premise, hypothesis));
+}
+
+NliLogits DebertaNliModel::PredictLogits(
+    const std::string& premise,
+    const std::string& hypothesis) {
     EncodedInputs encoded = Encode(premise, hypothesis);
     const std::array<int64_t, 2> input_shape = {
         1, static_cast<int64_t>(encoded.input_ids.size())
@@ -287,7 +313,11 @@ NliScores DebertaNliModel::Predict(const std::string& premise, const std::string
         throw std::runtime_error("Unexpected logits shape.");
     }
 
-    return SoftmaxScores(logits, 3);
+    return NliLogits{
+        logits[0],
+        logits[1],
+        logits[2],
+    };
 }
 
 }  // namespace nli

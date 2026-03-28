@@ -14,6 +14,7 @@ struct ExampleCommandLineOptions {
     std::string premise;
     std::string hypothesis;
     bool dump_encoding;
+    bool dump_logits;
     bool dump_special_token_ids;
 };
 

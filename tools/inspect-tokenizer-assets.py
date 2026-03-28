@@ -13,6 +13,8 @@ DEFAULT_CPP_BINARY = "builddir/nli"
 DEFAULT_CPP_MODEL = "models/mdeberta/onnx/model_quantized.onnx"
 DEFAULT_PROBE_PREMISE = "  Hello\tworld \n from\r\nCodex  "
 DEFAULT_PROBE_HYPOTHESIS = "  Another\tinput \nline  "
+DEFAULT_SPECIAL_TOKEN_PROBE_PREMISE = "Literal [MASK] token"
+DEFAULT_SPECIAL_TOKEN_PROBE_HYPOTHESIS = "Control example"
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,8 +81,9 @@ def parse_cpp_output(output: str) -> dict[str, object]:
 
     premise_match = re.search(r"^normalized_premise:\s?(.*)$", output, re.MULTILINE)
     hypothesis_match = re.search(r"^normalized_hypothesis:\s?(.*)$", output, re.MULTILINE)
-    if not premise_match or not hypothesis_match:
-        raise RuntimeError("Failed to parse normalized text from C++ output")
+    input_ids_match = re.search(r"^input_ids:(?P<input_ids>(?:\s+-?\d+)*)$", output, re.MULTILINE)
+    if not premise_match or not hypothesis_match or not input_ids_match:
+        raise RuntimeError("Failed to parse encoding details from C++ output")
 
     return {
         "special_token_ids": {
@@ -88,10 +91,21 @@ def parse_cpp_output(output: str) -> dict[str, object]:
         },
         "normalized_premise": premise_match.group(1),
         "normalized_hypothesis": hypothesis_match.group(1),
+        "input_ids": [
+            int(value) for value in input_ids_match.group("input_ids").split()
+        ],
     }
 
 
 def run_cpp_probe(args: argparse.Namespace) -> dict[str, object]:
+    return run_cpp_probe_for_text(args, args.premise, args.hypothesis)
+
+
+def run_cpp_probe_for_text(
+    args: argparse.Namespace,
+    premise: str,
+    hypothesis: str,
+) -> dict[str, object]:
     command = [
         args.cpp_binary,
         "-b",
@@ -101,9 +115,9 @@ def run_cpp_probe(args: argparse.Namespace) -> dict[str, object]:
         "--dump-special-token-ids",
         "--dump-encoding",
         "--premise",
-        args.premise,
+        premise,
         "--hypothesis",
-        args.hypothesis,
+        hypothesis,
     ]
     result = subprocess.run(
         command,
@@ -187,11 +201,29 @@ def print_inference_notes(tokenizer_json: dict[str, object], cpp_probe: dict[str
         )
 
 
+def print_special_token_text_probe(
+    tokenizer_json: dict[str, object],
+    cpp_probe: dict[str, object],
+) -> None:
+    mask_id = hf_special_token_ids(tokenizer_json).get("mask")
+    print("special_token_text_probe:")
+    print(f"  premise_input={DEFAULT_SPECIAL_TOKEN_PROBE_PREMISE!r}")
+    print(f"  hypothesis_input={DEFAULT_SPECIAL_TOKEN_PROBE_HYPOTHESIS!r}")
+    print(f"  cpp_input_ids={cpp_probe['input_ids']}")
+    print(f"  expected_mask_id={mask_id}")
+    print(f"  mask_id_present={mask_id in cpp_probe['input_ids']}")
+
+
 def main() -> int:
     args = parse_args()
     asset_dir = pathlib.Path(args.asset_dir)
     assets = load_assets(asset_dir)
     cpp_probe = run_cpp_probe(args)
+    special_token_probe = run_cpp_probe_for_text(
+        args,
+        DEFAULT_SPECIAL_TOKEN_PROBE_PREMISE,
+        DEFAULT_SPECIAL_TOKEN_PROBE_HYPOTHESIS,
+    )
 
     tokenizer_json = assets["tokenizer_json"]
     hf_ids = hf_special_token_ids(tokenizer_json)
@@ -203,6 +235,7 @@ def main() -> int:
     )
     compare_token_ids(hf_ids, cpp_probe["special_token_ids"])
     print_normalization_diagnostics(tokenizer_json, cpp_probe, args)
+    print_special_token_text_probe(tokenizer_json, special_token_probe)
     print_inference_notes(tokenizer_json, cpp_probe)
     return 0
 

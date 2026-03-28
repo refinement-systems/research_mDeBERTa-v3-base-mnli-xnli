@@ -24,6 +24,11 @@ readonly tokenizer_asset_files=(
     "tokenizer_config.json"
 )
 
+readonly reference_weight_files=(
+    "config.json"
+    "model.safetensors"
+)
+
 usage() {
     cat <<EOF
 Usage: tools/download-mdeberta-v3-base.sh [options] [FILE...]
@@ -38,6 +43,8 @@ Options:
   --dir PATH   Override the output directory.
   --tokenizer-assets
                Download tokenizer.json and related tokenizer metadata files.
+  --reference-weights
+               Download Hugging Face reference weights for PyTorch comparisons.
   --force      Re-download files even if they already exist locally.
   --help       Show this help text.
 
@@ -45,6 +52,7 @@ Examples:
   tools/download-mdeberta-v3-base.sh
   tools/download-mdeberta-v3-base.sh --force
   tools/download-mdeberta-v3-base.sh --tokenizer-assets
+  tools/download-mdeberta-v3-base.sh --reference-weights
   tools/download-mdeberta-v3-base.sh spm.model onnx/model.onnx
 EOF
 }
@@ -82,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --tokenizer-assets)
             files+=("${tokenizer_asset_files[@]}")
+            shift
+            ;;
+        --reference-weights)
+            files+=("${reference_weight_files[@]}")
             shift
             ;;
         --force)

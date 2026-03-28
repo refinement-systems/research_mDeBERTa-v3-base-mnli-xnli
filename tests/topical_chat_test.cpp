@@ -175,6 +175,9 @@ void VerifyExampleOptionsAcceptExplicitModelPath() {
     if (options.dump_encoding) {
         throw std::runtime_error("expected dump encoding to default to false");
     }
+    if (options.dump_logits) {
+        throw std::runtime_error("expected dump logits to default to false");
+    }
     if (options.dump_special_token_ids) {
         throw std::runtime_error("expected special token dump to default to false");
     }
@@ -216,8 +219,24 @@ void VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag() {
     if (!options.dump_encoding) {
         throw std::runtime_error("expected dump encoding flag to be enabled");
     }
+    if (options.dump_logits) {
+        throw std::runtime_error("expected dump logits to remain disabled");
+    }
     if (options.dump_special_token_ids) {
         throw std::runtime_error("expected special token dump to remain disabled");
+    }
+}
+
+void VerifyExampleOptionsAcceptDumpLogitsFlag() {
+    auto parser = MakeExampleParser();
+    const std::vector<std::string> args = {
+        "--dump-logits",
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeExampleCommandLine(parser, values);
+
+    if (!options.dump_logits) {
+        throw std::runtime_error("expected dump logits flag to be enabled");
     }
 }
 
@@ -401,6 +420,7 @@ int main() {
     VerifyExampleOptionsAcceptExplicitModelPath();
     VerifyExampleOptionsDefaultModelPath();
     VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag();
+    VerifyExampleOptionsAcceptDumpLogitsFlag();
     VerifyExampleOptionsAcceptSpecialTokenDumpFlag();
     VerifyExampleOptionsRejectUnexpectedPositionalArgs();
     VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling();

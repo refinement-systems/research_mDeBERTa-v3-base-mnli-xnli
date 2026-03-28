@@ -43,7 +43,17 @@ int main(int argc, char* argv[]) {
             PrintVector("attention_mask", encoded.attention_mask);
             PrintVector("token_type_ids", encoded.token_type_ids);
         }
-        const nli::NliScores scores = model.Predict(options.premise, options.hypothesis);
+        const nli::NliLogits logits = model.PredictLogits(options.premise, options.hypothesis);
+        const nli::NliScores scores = nli::ScoresFromLogits(logits);
+
+        if (options.dump_logits) {
+            std::cout << "logits:"
+                      << " entailment=" << logits.entailment
+                      << " neutral=" << logits.neutral
+                      << " contradiction=" << logits.contradiction
+                      << "\n";
+            std::cout << "predicted_logit_label: " << nli::PredictedLabel(logits) << "\n";
+        }
 
         std::cout << "entailment: " << scores.entailment << "\n";
         std::cout << "neutral: " << scores.neutral << "\n";
