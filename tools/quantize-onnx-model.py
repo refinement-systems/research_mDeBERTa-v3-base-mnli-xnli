@@ -233,8 +233,11 @@ def main() -> int:
 
     helper = r"""
 import json
+import os
 import pathlib
+import shutil
 import sys
+import tempfile
 
 from onnxruntime.quantization import QuantType, quantize_dynamic
 
@@ -252,16 +255,23 @@ def quant_type(name):
 
 for spec in specs:
     output_path = pathlib.Path(spec["output"])
-    quantize_dynamic(
-        input_model,
-        str(output_path),
-        per_channel=spec["per_channel"],
-        reduce_range=spec["reduce_range"],
-        weight_type=quant_type(spec["weight_type"]),
-        op_types_to_quantize=spec["op_types"] or None,
-        nodes_to_exclude=spec["nodes_to_exclude"] or None,
-        extra_options={"MatMulConstBOnly": True},
-    )
+    with tempfile.TemporaryDirectory(prefix="nli-quantize-") as tmp_dir:
+        staged_input = pathlib.Path(tmp_dir) / pathlib.Path(input_model).name
+        try:
+            os.symlink(pathlib.Path(input_model).resolve(), staged_input)
+        except OSError:
+            shutil.copy2(input_model, staged_input)
+
+        quantize_dynamic(
+            str(staged_input),
+            str(output_path),
+            per_channel=spec["per_channel"],
+            reduce_range=spec["reduce_range"],
+            weight_type=quant_type(spec["weight_type"]),
+            op_types_to_quantize=spec["op_types"] or None,
+            nodes_to_exclude=spec["nodes_to_exclude"] or None,
+            extra_options={"MatMulConstBOnly": True},
+        )
     print(json.dumps(spec))
 """
 
