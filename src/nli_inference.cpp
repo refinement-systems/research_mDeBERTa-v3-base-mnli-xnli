@@ -10,10 +10,6 @@
 
 namespace {
 
-constexpr int64_t kClsId = 1;
-constexpr int64_t kSepId = 2;
-constexpr size_t kMaxLen = 512;
-
 struct EncodedPair {
     std::string normalized_premise;
     std::string normalized_hypothesis;
@@ -24,13 +20,23 @@ struct EncodedPair {
 
 std::vector<int64_t> EncodeSentencePiece(
     sentencepiece::SentencePieceProcessor& sp,
+    const nli::TokenizerAssetConfig& tokenizer_config,
     const std::string& normalized_text) {
-    std::vector<int> ids;
-    auto status = sp.Encode(normalized_text, &ids);
-    if (!status.ok()) {
-        throw std::runtime_error("SentencePiece encode failed: " + status.ToString());
+    std::vector<int64_t> encoded_ids;
+    for (const auto& segment : nli::SplitDebertaTokenizerInput(normalized_text, tokenizer_config)) {
+        if (segment.is_special_token) {
+            encoded_ids.push_back(segment.token_id);
+            continue;
+        }
+
+        std::vector<int> ids;
+        auto status = sp.Encode(segment.text, &ids);
+        if (!status.ok()) {
+            throw std::runtime_error("SentencePiece encode failed: " + status.ToString());
+        }
+        encoded_ids.insert(encoded_ids.end(), ids.begin(), ids.end());
     }
-    return std::vector<int64_t>(ids.begin(), ids.end());
+    return encoded_ids;
 }
 
 void TruncatePair(std::vector<int64_t>& premise, std::vector<int64_t>& hypothesis, size_t max_len) {
@@ -45,13 +51,16 @@ void TruncatePair(std::vector<int64_t>& premise, std::vector<int64_t>& hypothesi
 
 EncodedPair BuildDebertaPair(
     sentencepiece::SentencePieceProcessor& sp,
+    const nli::TokenizerAssetConfig& tokenizer_config,
     const std::string& premise,
     const std::string& hypothesis) {
-    const std::string normalized_premise = nli::NormalizeDebertaTokenizerInput(premise);
-    const std::string normalized_hypothesis = nli::NormalizeDebertaTokenizerInput(hypothesis);
-    auto premise_ids = EncodeSentencePiece(sp, normalized_premise);
-    auto hypothesis_ids = EncodeSentencePiece(sp, normalized_hypothesis);
-    TruncatePair(premise_ids, hypothesis_ids, kMaxLen);
+    const std::string normalized_premise =
+        nli::NormalizeDebertaTokenizerInput(premise, tokenizer_config);
+    const std::string normalized_hypothesis =
+        nli::NormalizeDebertaTokenizerInput(hypothesis, tokenizer_config);
+    auto premise_ids = EncodeSentencePiece(sp, tokenizer_config, normalized_premise);
+    auto hypothesis_ids = EncodeSentencePiece(sp, tokenizer_config, normalized_hypothesis);
+    TruncatePair(premise_ids, hypothesis_ids, tokenizer_config.max_length);
 
     EncodedPair out;
     out.normalized_premise = normalized_premise;
@@ -60,29 +69,29 @@ EncodedPair BuildDebertaPair(
     out.attention_mask.reserve(premise_ids.size() + hypothesis_ids.size() + 3);
     out.token_type_ids.reserve(premise_ids.size() + hypothesis_ids.size() + 3);
 
-    out.input_ids.push_back(kClsId);
+    out.input_ids.push_back(tokenizer_config.special_token_ids.cls);
     out.attention_mask.push_back(1);
-    out.token_type_ids.push_back(0);
+    out.token_type_ids.push_back(tokenizer_config.template_ids.cls);
 
     for (auto id : premise_ids) {
         out.input_ids.push_back(id);
         out.attention_mask.push_back(1);
-        out.token_type_ids.push_back(0);
+        out.token_type_ids.push_back(tokenizer_config.template_ids.first_sequence);
     }
 
-    out.input_ids.push_back(kSepId);
+    out.input_ids.push_back(tokenizer_config.special_token_ids.sep);
     out.attention_mask.push_back(1);
-    out.token_type_ids.push_back(0);
+    out.token_type_ids.push_back(tokenizer_config.template_ids.first_sep);
 
     for (auto id : hypothesis_ids) {
         out.input_ids.push_back(id);
         out.attention_mask.push_back(1);
-        out.token_type_ids.push_back(1);
+        out.token_type_ids.push_back(tokenizer_config.template_ids.second_sequence);
     }
 
-    out.input_ids.push_back(kSepId);
+    out.input_ids.push_back(tokenizer_config.special_token_ids.sep);
     out.attention_mask.push_back(1);
-    out.token_type_ids.push_back(1);
+    out.token_type_ids.push_back(tokenizer_config.template_ids.second_sep);
 
     return out;
 }
@@ -192,6 +201,8 @@ DebertaNliModel::DebertaNliModel(
         throw std::runtime_error("Failed to load SentencePiece model: " + sp_status.ToString());
     }
 
+    tokenizer_config_ = LoadTokenizerAssetConfigForSentencePiece(sentencepiece_path);
+
     auto session_result = CreateInferenceSession(env_, model_path, backend, log);
     session_ = std::move(session_result.value);
 
@@ -200,7 +211,7 @@ DebertaNliModel::DebertaNliModel(
 }
 
 EncodedInputs DebertaNliModel::Encode(const std::string& premise, const std::string& hypothesis) {
-    EncodedPair encoded = BuildDebertaPair(sp_, premise, hypothesis);
+    EncodedPair encoded = BuildDebertaPair(sp_, tokenizer_config_, premise, hypothesis);
     return EncodedInputs{
         std::move(encoded.normalized_premise),
         std::move(encoded.normalized_hypothesis),
@@ -211,13 +222,7 @@ EncodedInputs DebertaNliModel::Encode(const std::string& premise, const std::str
 }
 
 TokenizerSpecialTokenIds DebertaNliModel::GetSpecialTokenIds() const {
-    return TokenizerSpecialTokenIds{
-        sp_.PieceToId("[PAD]"),
-        sp_.PieceToId("[CLS]"),
-        sp_.PieceToId("[SEP]"),
-        sp_.PieceToId("[UNK]"),
-        sp_.PieceToId("[MASK]"),
-    };
+    return tokenizer_config_.special_token_ids;
 }
 
 NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {

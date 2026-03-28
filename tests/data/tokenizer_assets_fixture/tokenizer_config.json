@@ -1,0 +1,18 @@
+{
+  "tokenizer_class": "DebertaV2Tokenizer",
+  "vocab_type": "spm",
+  "do_lower_case": false,
+  "model_max_length": 128,
+  "pad_token": "[PAD]",
+  "cls_token": "[CLS]",
+  "sep_token": "[SEP]",
+  "unk_token": "[UNK]",
+  "mask_token": "[MASK]",
+  "added_tokens_decoder": {
+    "0": {"content": "[PAD]"},
+    "1": {"content": "[CLS]"},
+    "2": {"content": "[SEP]"},
+    "3": {"content": "[UNK]"},
+    "42": {"content": "[MASK]"}
+  }
+}

@@ -126,6 +126,7 @@ add_library(nli_common
     src/nli_eval.cpp
     src/nli_inference.cpp
     src/session_factory.cpp
+    src/tokenizer_assets.cpp
     src/tokenizer_utils.cpp
     src/topical_chat.cpp
 )

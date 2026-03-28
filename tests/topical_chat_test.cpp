@@ -1,6 +1,7 @@
 #include "command_line.h"
 #include "nli_eval.h"
 #include "nli_inference.h"
+#include "tokenizer_assets.h"
 #include "tokenizer_utils.h"
 #include "topical_chat.h"
 
@@ -18,6 +19,10 @@ std::string FixturePath() {
 
 std::string EvalFixturePath() {
     return std::string(NLI_SOURCE_DIR) + "/tests/data/nli_eval_fixture.tsv";
+}
+
+std::string TokenizerAssetsFixturePath() {
+    return std::string(NLI_SOURCE_DIR) + "/tests/data/tokenizer_assets_fixture";
 }
 
 void ExpectParserExitCode(const std::function<void()>& callback, int expected_code) {
@@ -244,10 +249,62 @@ void VerifyExampleOptionsRejectUnexpectedPositionalArgs() {
 void VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling() {
     const std::string input = "  Hello\tworld \n from\r\nCodex  ";
     const std::string expected = "Hello world from Codex";
-    const std::string actual = nli::NormalizeDebertaTokenizerInput(input);
+    const std::string actual = nli::NormalizeDebertaTokenizerInput(
+        input,
+        nli::DefaultTokenizerAssetConfig());
 
     if (actual != expected) {
         throw std::runtime_error("unexpected tokenizer normalization result");
+    }
+}
+
+void VerifyTokenizerAssetLoadingUsesConfiguredIds() {
+    const auto config = nli::LoadTokenizerAssetConfigFromDir(TokenizerAssetsFixturePath());
+
+    if (config.special_token_ids.pad != 0 ||
+        config.special_token_ids.cls != 1 ||
+        config.special_token_ids.sep != 2 ||
+        config.special_token_ids.unk != 3 ||
+        config.special_token_ids.mask != 42) {
+        throw std::runtime_error("unexpected tokenizer asset special token ids");
+    }
+    if (config.max_length != 128) {
+        throw std::runtime_error("expected tokenizer asset max length to round-trip");
+    }
+    if (!config.strip_left || !config.strip_right || !config.collapse_spaces) {
+        throw std::runtime_error("expected tokenizer asset normalization flags to round-trip");
+    }
+    if (config.template_ids.cls != 0 ||
+        config.template_ids.first_sequence != 0 ||
+        config.template_ids.first_sep != 0 ||
+        config.template_ids.second_sequence != 1 ||
+        config.template_ids.second_sep != 1) {
+        throw std::runtime_error("unexpected tokenizer template ids");
+    }
+}
+
+void VerifyTokenizerSplitPreservesConfiguredSpecialTokens() {
+    auto config = nli::DefaultTokenizerAssetConfig();
+    config.special_token_ids.mask = 42;
+
+    const auto segments = nli::SplitDebertaTokenizerInput(
+        "Alpha[MASK]Beta [CLS]",
+        config);
+
+    if (segments.size() != 4) {
+        throw std::runtime_error("unexpected number of tokenizer segments");
+    }
+    if (segments[0].text != "Alpha" || segments[0].is_special_token) {
+        throw std::runtime_error("expected leading plain-text tokenizer segment");
+    }
+    if (!segments[1].is_special_token || segments[1].text != "[MASK]" || segments[1].token_id != 42) {
+        throw std::runtime_error("expected [MASK] tokenizer segment to round-trip");
+    }
+    if (segments[2].text != "Beta " || segments[2].is_special_token) {
+        throw std::runtime_error("expected middle plain-text tokenizer segment");
+    }
+    if (!segments[3].is_special_token || segments[3].text != "[CLS]" || segments[3].token_id != 1) {
+        throw std::runtime_error("expected [CLS] tokenizer segment to round-trip");
     }
 }
 
@@ -347,6 +404,8 @@ int main() {
     VerifyExampleOptionsAcceptSpecialTokenDumpFlag();
     VerifyExampleOptionsRejectUnexpectedPositionalArgs();
     VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling();
+    VerifyTokenizerAssetLoadingUsesConfiguredIds();
+    VerifyTokenizerSplitPreservesConfiguredSpecialTokens();
     VerifyEvalFixtureParsingPreservesRows();
     VerifyEvalOptionsAcceptComparisonModel();
     VerifyEvalOptionsUseDefaults();

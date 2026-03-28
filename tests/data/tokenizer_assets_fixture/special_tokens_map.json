@@ -1,0 +1,9 @@
+{
+  "pad_token": "[PAD]",
+  "cls_token": "[CLS]",
+  "sep_token": "[SEP]",
+  "unk_token": {
+    "content": "[UNK]"
+  },
+  "mask_token": "[MASK]"
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "session_factory.h"
+#include "tokenizer_assets.h"
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <sentencepiece_processor.h>
@@ -25,14 +26,6 @@ struct EncodedInputs {
     std::vector<int64_t> input_ids;
     std::vector<int64_t> attention_mask;
     std::vector<int64_t> token_type_ids;
-};
-
-struct TokenizerSpecialTokenIds {
-    int64_t pad;
-    int64_t cls;
-    int64_t sep;
-    int64_t unk;
-    int64_t mask;
 };
 
 inline constexpr std::array<std::string_view, 3> kNliScoreLabels = {
@@ -68,6 +61,7 @@ private:
     std::vector<const char*> input_names_;
     std::vector<std::string> output_name_storage_;
     std::vector<const char*> output_names_;
+    TokenizerAssetConfig tokenizer_config_;
 };
 
 }  // namespace nli
