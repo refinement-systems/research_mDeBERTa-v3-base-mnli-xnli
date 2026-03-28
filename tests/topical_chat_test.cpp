@@ -1,5 +1,7 @@
 #include "command_line.h"
+#include "nli_eval.h"
 #include "nli_inference.h"
+#include "tokenizer_utils.h"
 #include "topical_chat.h"
 
 #include <functional>
@@ -12,6 +14,10 @@ namespace {
 
 std::string FixturePath() {
     return std::string(NLI_SOURCE_DIR) + "/tests/data/topical_chat_fixture.json";
+}
+
+std::string EvalFixturePath() {
+    return std::string(NLI_SOURCE_DIR) + "/tests/data/nli_eval_fixture.tsv";
 }
 
 void ExpectParserExitCode(const std::function<void()>& callback, int expected_code) {
@@ -41,6 +47,13 @@ optparse::OptionParserExcept MakeExampleParser() {
     optparse::OptionParserExcept parser;
     nli::ConfigureExampleOptionParser(parser);
     parser.prog("nli");
+    return parser;
+}
+
+optparse::OptionParserExcept MakeEvalParser() {
+    optparse::OptionParserExcept parser;
+    nli::ConfigureEvalOptionParser(parser);
+    parser.prog("nli-eval");
     return parser;
 }
 
@@ -154,6 +167,9 @@ void VerifyExampleOptionsAcceptExplicitModelPath() {
     if (options.model_path != "/tmp/custom.onnx") {
         throw std::runtime_error("expected explicit model path to round-trip");
     }
+    if (options.dump_encoding) {
+        throw std::runtime_error("expected dump encoding to default to false");
+    }
 }
 
 void VerifyExampleOptionsDefaultModelPath() {
@@ -167,6 +183,30 @@ void VerifyExampleOptionsDefaultModelPath() {
     }
     if (options.model_path != nli::DefaultModelPath()) {
         throw std::runtime_error("expected default model path to match nli");
+    }
+    if (options.premise.empty() || options.hypothesis.empty()) {
+        throw std::runtime_error("expected default example texts to be populated");
+    }
+}
+
+void VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag() {
+    auto parser = MakeExampleParser();
+    const std::vector<std::string> args = {
+        "--premise=Premise text",
+        "--hypothesis=Hypothesis text",
+        "--dump-encoding",
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeExampleCommandLine(parser, values);
+
+    if (options.premise != "Premise text") {
+        throw std::runtime_error("expected custom premise to round-trip");
+    }
+    if (options.hypothesis != "Hypothesis text") {
+        throw std::runtime_error("expected custom hypothesis to round-trip");
+    }
+    if (!options.dump_encoding) {
+        throw std::runtime_error("expected dump encoding flag to be enabled");
     }
 }
 
@@ -182,6 +222,97 @@ void VerifyExampleOptionsRejectUnexpectedPositionalArgs() {
         2);
 }
 
+void VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling() {
+    const std::string input = "  Hello\tworld \n from\r\nCodex  ";
+    const std::string expected = " Hello world from Codex";
+    const std::string actual = nli::NormalizeDebertaTokenizerInput(input);
+
+    if (actual != expected) {
+        throw std::runtime_error("unexpected tokenizer normalization result");
+    }
+}
+
+void VerifyEvalFixtureParsingPreservesRows() {
+    const auto examples = nli::ReadNliEvalExamples(EvalFixturePath());
+    if (examples.size() != 3) {
+        throw std::runtime_error("unexpected number of eval examples");
+    }
+
+    if (examples[0].id != "row-1") {
+        throw std::runtime_error("expected eval id to round-trip");
+    }
+    if (!examples[1].label || *examples[1].label != "contradiction") {
+        throw std::runtime_error("expected eval label to round-trip");
+    }
+    if (examples[2].premise != "Angela Merkel is a politician.") {
+        throw std::runtime_error("expected eval premise to round-trip");
+    }
+    if (examples[2].hypothesis != "The economy is growing.") {
+        throw std::runtime_error("expected eval hypothesis to round-trip");
+    }
+}
+
+void VerifyEvalOptionsAcceptComparisonModel() {
+    auto parser = MakeEvalParser();
+    const std::vector<std::string> args = {
+        "--backend=cpu",
+        "--model=/tmp/float.onnx",
+        "--compare-model=/tmp/quant.onnx",
+        "--max-disagreements=7",
+        EvalFixturePath(),
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeEvalCommandLine(parser, values);
+
+    if (options.backend != nli::SessionBackend::kCPU) {
+        throw std::runtime_error("expected eval backend to parse");
+    }
+    if (options.model_path != "/tmp/float.onnx") {
+        throw std::runtime_error("expected eval model path to round-trip");
+    }
+    if (options.compare_model_path != "/tmp/quant.onnx") {
+        throw std::runtime_error("expected compare model path to round-trip");
+    }
+    if (options.max_disagreements != 7) {
+        throw std::runtime_error("expected max disagreements to round-trip");
+    }
+    if (options.input_path != EvalFixturePath()) {
+        throw std::runtime_error("expected eval input path to round-trip");
+    }
+}
+
+void VerifyEvalOptionsUseDefaults() {
+    auto parser = MakeEvalParser();
+    const std::vector<std::string> args = {EvalFixturePath()};
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeEvalCommandLine(parser, values);
+
+    if (options.backend != nli::DefaultSessionBackend()) {
+        throw std::runtime_error("expected eval default backend to match nli");
+    }
+    if (options.model_path != nli::DefaultModelPath()) {
+        throw std::runtime_error("expected eval default model path to match nli");
+    }
+    if (!options.compare_model_path.empty()) {
+        throw std::runtime_error("expected compare model path to default to empty");
+    }
+    if (options.max_disagreements != 10) {
+        throw std::runtime_error("expected max disagreements default to be 10");
+    }
+}
+
+void VerifyEvalOptionsRejectMissingInput() {
+    auto parser = MakeEvalParser();
+    const std::vector<std::string> args;
+    const optparse::Values& values = parser.parse_args(args);
+
+    ExpectParserExitCode(
+        [&]() {
+            (void)nli::FinalizeEvalCommandLine(parser, values);
+        },
+        2);
+}
+
 }  // namespace
 
 int main() {
@@ -193,6 +324,12 @@ int main() {
     VerifyTopicalChatOptionsRejectExtraInput();
     VerifyExampleOptionsAcceptExplicitModelPath();
     VerifyExampleOptionsDefaultModelPath();
+    VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag();
     VerifyExampleOptionsRejectUnexpectedPositionalArgs();
+    VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling();
+    VerifyEvalFixtureParsingPreservesRows();
+    VerifyEvalOptionsAcceptComparisonModel();
+    VerifyEvalOptionsUseDefaults();
+    VerifyEvalOptionsRejectMissingInput();
     return 0;
 }

@@ -1,0 +1,4 @@
+id	label	premise	hypothesis
+row-1	entailment	The sky is blue.	The sky is blue.
+row-2	contradiction	Paris is in France.	Paris is in Germany.
+row-3	neutral	Angela Merkel is a politician.	The economy is growing.

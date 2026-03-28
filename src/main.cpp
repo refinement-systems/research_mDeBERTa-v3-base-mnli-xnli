@@ -3,20 +3,37 @@
 
 #include <iostream>
 #include <string>
+#include <vector>
+
+namespace {
+
+void PrintVector(const std::string& name, const std::vector<int64_t>& values) {
+    std::cout << name << ":";
+    for (const auto value : values) {
+        std::cout << ' ' << value;
+    }
+    std::cout << "\n";
+}
+
+}  // namespace
 
 int main(int argc, char* argv[]) {
     try {
         const nli::ExampleCommandLineOptions options = nli::ParseExampleCommandLine(argc, argv);
-        const std::string premise =
-            "Angela Merkel ist eine Politikerin in Deutschland und Vorsitzende der CDU";
-        const std::string hypothesis =
-            "Emmanuel Macron is the President of France";
         nli::DebertaNliModel model(
             options.model_path,
             nli::DefaultSentencePieceModelPath(),
             options.backend,
             std::cerr);
-        const nli::NliScores scores = model.Predict(premise, hypothesis);
+        if (options.dump_encoding) {
+            const nli::EncodedInputs encoded = model.Encode(options.premise, options.hypothesis);
+            std::cout << "normalized_premise: " << encoded.normalized_premise << "\n";
+            std::cout << "normalized_hypothesis: " << encoded.normalized_hypothesis << "\n";
+            PrintVector("input_ids", encoded.input_ids);
+            PrintVector("attention_mask", encoded.attention_mask);
+            PrintVector("token_type_ids", encoded.token_type_ids);
+        }
+        const nli::NliScores scores = model.Predict(options.premise, options.hypothesis);
 
         std::cout << "entailment: " << scores.entailment << "\n";
         std::cout << "neutral: " << scores.neutral << "\n";

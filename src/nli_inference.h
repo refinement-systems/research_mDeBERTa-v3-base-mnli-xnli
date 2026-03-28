@@ -19,6 +19,14 @@ struct NliScores {
     float contradiction;
 };
 
+struct EncodedInputs {
+    std::string normalized_premise;
+    std::string normalized_hypothesis;
+    std::vector<int64_t> input_ids;
+    std::vector<int64_t> attention_mask;
+    std::vector<int64_t> token_type_ids;
+};
+
 inline constexpr std::array<std::string_view, 3> kNliScoreLabels = {
     "entailment",
     "neutral",
@@ -38,6 +46,7 @@ public:
         SessionBackend backend,
         std::ostream& log);
 
+    EncodedInputs Encode(const std::string& premise, const std::string& hypothesis);
     NliScores Predict(const std::string& premise, const std::string& hypothesis);
 
 private:

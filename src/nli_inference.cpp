@@ -1,4 +1,5 @@
 #include "nli_inference.h"
+#include "tokenizer_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +15,8 @@ constexpr int64_t kSepId = 2;
 constexpr size_t kMaxLen = 512;
 
 struct EncodedPair {
+    std::string normalized_premise;
+    std::string normalized_hypothesis;
     std::vector<int64_t> input_ids;
     std::vector<int64_t> attention_mask;
     std::vector<int64_t> token_type_ids;
@@ -21,9 +24,9 @@ struct EncodedPair {
 
 std::vector<int64_t> EncodeSentencePiece(
     sentencepiece::SentencePieceProcessor& sp,
-    const std::string& text) {
+    const std::string& normalized_text) {
     std::vector<int> ids;
-    auto status = sp.Encode(text, &ids);
+    auto status = sp.Encode(normalized_text, &ids);
     if (!status.ok()) {
         throw std::runtime_error("SentencePiece encode failed: " + status.ToString());
     }
@@ -44,11 +47,15 @@ EncodedPair BuildDebertaPair(
     sentencepiece::SentencePieceProcessor& sp,
     const std::string& premise,
     const std::string& hypothesis) {
-    auto premise_ids = EncodeSentencePiece(sp, premise);
-    auto hypothesis_ids = EncodeSentencePiece(sp, hypothesis);
+    const std::string normalized_premise = nli::NormalizeDebertaTokenizerInput(premise);
+    const std::string normalized_hypothesis = nli::NormalizeDebertaTokenizerInput(hypothesis);
+    auto premise_ids = EncodeSentencePiece(sp, normalized_premise);
+    auto hypothesis_ids = EncodeSentencePiece(sp, normalized_hypothesis);
     TruncatePair(premise_ids, hypothesis_ids, kMaxLen);
 
     EncodedPair out;
+    out.normalized_premise = normalized_premise;
+    out.normalized_hypothesis = normalized_hypothesis;
     out.input_ids.reserve(premise_ids.size() + hypothesis_ids.size() + 3);
     out.attention_mask.reserve(premise_ids.size() + hypothesis_ids.size() + 3);
     out.token_type_ids.reserve(premise_ids.size() + hypothesis_ids.size() + 3);
@@ -192,8 +199,19 @@ DebertaNliModel::DebertaNliModel(
     output_names_ = GetOutputNames(session_, allocator_, output_name_storage_);
 }
 
-NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {
+EncodedInputs DebertaNliModel::Encode(const std::string& premise, const std::string& hypothesis) {
     EncodedPair encoded = BuildDebertaPair(sp_, premise, hypothesis);
+    return EncodedInputs{
+        std::move(encoded.normalized_premise),
+        std::move(encoded.normalized_hypothesis),
+        std::move(encoded.input_ids),
+        std::move(encoded.attention_mask),
+        std::move(encoded.token_type_ids),
+    };
+}
+
+NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {
+    EncodedInputs encoded = Encode(premise, hypothesis);
     const std::array<int64_t, 2> input_shape = {
         1, static_cast<int64_t>(encoded.input_ids.size())
     };

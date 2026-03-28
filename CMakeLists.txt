@@ -123,8 +123,10 @@ set(CMAKE_SKIP_INSTALL_RULES "${_nli_saved_skip_install_rules}")
 
 add_library(nli_common
     src/command_line.cpp
+    src/nli_eval.cpp
     src/nli_inference.cpp
     src/session_factory.cpp
+    src/tokenizer_utils.cpp
     src/topical_chat.cpp
 )
 target_include_directories(nli_common PUBLIC
@@ -152,6 +154,11 @@ add_executable(nli-topical-chat
     src/topical_chat_main.cpp
 )
 target_link_libraries(nli-topical-chat PRIVATE nli_common)
+
+add_executable(nli-eval
+    src/eval_main.cpp
+)
+target_link_libraries(nli-eval PRIVATE nli_common)
 
 if (NLI_BUILD_TESTS)
     enable_testing()
@@ -191,6 +198,10 @@ if (NLI_BUILD_TESTS)
 endif()
 
 install(TARGETS nli nli-topical-chat
+    COMPONENT runtime
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS nli-eval
     COMPONENT runtime
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
