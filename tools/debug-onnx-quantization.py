@@ -36,7 +36,8 @@ def parse_args() -> argparse.Namespace:
             Examples:
               .venv/bin/python tools/debug-onnx-quantization.py
               .venv/bin/python tools/debug-onnx-quantization.py --op-type MatMul --op-type Add
-              .venv/bin/python tools/debug-onnx-quantization.py --tsv tests/data/nli_eval_fixture.tsv --max-examples 3
+              .venv/bin/python tools/debug-onnx-quantization.py --tsv tests/data/nli_eval_fixture.tsv --max-examples-per-source 3
+              .venv/bin/python tools/debug-onnx-quantization.py --input-dir benchmarks/nli --pattern 'xnli-*.tsv' --max-examples-per-source 6
             """
         ),
     )
@@ -63,14 +64,32 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tsv",
-        default="",
-        help="Optional TSV with premise/hypothesis columns. Overrides --premise/--hypothesis.",
+        dest="tsv_paths",
+        action="append",
+        default=[],
+        help="TSV with premise/hypothesis columns. Repeat to debug multiple files.",
     )
     parser.add_argument(
-        "--max-examples",
+        "--input-dir",
+        default="",
+        help="Optional directory containing TSV files to sample for debugging.",
+    )
+    parser.add_argument(
+        "--pattern",
+        default="*.tsv",
+        help="Glob pattern used with --input-dir (default: *.tsv)",
+    )
+    parser.add_argument(
+        "--max-examples-per-source",
         type=int,
         default=1,
-        help="Maximum number of examples to collect activations for (default: 1)",
+        help="Maximum number of examples to load from each TSV source (default: 1)",
+    )
+    parser.add_argument(
+        "--max-total-examples",
+        type=int,
+        default=0,
+        help="Optional cap across all loaded examples after per-source limits (default: unlimited)",
     )
     parser.add_argument(
         "--op-type",
@@ -98,6 +117,17 @@ def parse_args() -> argparse.Namespace:
             "How many actual quantized MatMul node names to suggest for nodes_to_exclude "
             "(default: 8)"
         ),
+    )
+    parser.add_argument(
+        "--suggest-by",
+        choices=["max_abs", "mean_abs", "rmse", "max_rel", "mean_rel", "rmse_rel"],
+        default="rmse_rel",
+        help="Metric used to rank suggested exclusions (default: rmse_rel)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the full result as JSON instead of the human-readable report.",
     )
     parser.add_argument(
         "--install-deps",
@@ -206,28 +236,48 @@ class FeedListDataReader(CalibrationDataReader):
         self._index = 0
 
 
-def read_examples(tsv_path, premise, hypothesis, max_examples):
-    if not tsv_path:
-        return [Example(premise=premise, hypothesis=hypothesis, example_id="example-1")]
+def discover_tsv_paths(explicit_paths, input_dir, pattern):
+    paths = []
+    for path in explicit_paths:
+        paths.append(pathlib.Path(path))
+    if input_dir:
+        paths.extend(sorted(pathlib.Path(input_dir).glob(pattern)))
+    return [path for path in paths if path.is_file()]
+
+
+def read_examples(tsv_paths, input_dir, pattern, premise, hypothesis, max_examples_per_source, max_total_examples):
+    source_counts = {}
+    discovered_paths = discover_tsv_paths(tsv_paths, input_dir, pattern)
+    if not discovered_paths:
+        return [Example(premise=premise, hypothesis=hypothesis, example_id="example-1")], source_counts
 
     examples = []
-    with open(tsv_path, newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        if "premise" not in reader.fieldnames or "hypothesis" not in reader.fieldnames:
-            raise RuntimeError("TSV must include premise and hypothesis columns")
-        for index, row in enumerate(reader):
-            if max_examples > 0 and len(examples) >= max_examples:
-                break
-            examples.append(
-                Example(
-                    premise=row["premise"],
-                    hypothesis=row["hypothesis"],
-                    example_id=row.get("id") or f"row-{index + 1}",
+    for tsv_path in discovered_paths:
+        loaded_for_source = 0
+        with open(tsv_path, newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if "premise" not in reader.fieldnames or "hypothesis" not in reader.fieldnames:
+                raise RuntimeError(f"TSV must include premise and hypothesis columns: {tsv_path}")
+            for index, row in enumerate(reader):
+                if max_examples_per_source > 0 and loaded_for_source >= max_examples_per_source:
+                    break
+                if max_total_examples > 0 and len(examples) >= max_total_examples:
+                    break
+                examples.append(
+                    Example(
+                        premise=row["premise"],
+                        hypothesis=row["hypothesis"],
+                        example_id=row.get("id") or f"{tsv_path.stem}-row-{index + 1}",
+                    )
                 )
-            )
+                loaded_for_source += 1
+        source_counts[str(tsv_path)] = loaded_for_source
+        if max_total_examples > 0 and len(examples) >= max_total_examples:
+            break
+
     if not examples:
         raise RuntimeError("No examples were loaded for debugging")
-    return examples
+    return examples, source_counts
 
 
 def model_input_names(model_path):
@@ -246,6 +296,22 @@ def output_name_metadata(model_path):
                     "node_name": node.name,
                 }
     return mapping
+
+
+def quantized_source_nodes(model_path):
+    model = onnx.load(model_path, load_external_data=False)
+    quantized = set()
+    for node in model.graph.node:
+        if node.op_type in ("MatMulInteger", "QLinearMatMul"):
+            node_name = node.name
+            if node_name.endswith("_quant"):
+                quantized.add(node_name[:-len("_quant")])
+            else:
+                quantized.add(node_name)
+            continue
+        if node.op_type == "Mul" and node.name.endswith("_quant_scales_mul"):
+            quantized.add(node.name[:-len("_quant_scales_mul")])
+    return quantized
 
 
 def build_feeds(tokenizer_source, model_inputs, examples):
@@ -318,6 +384,74 @@ def compare_activations(float_activations, quant_activations, float_meta, quant_
     return comparisons
 
 
+def enrich_comparisons(comparisons):
+    for item in comparisons:
+        scale = max(item["float_mean_abs"], 1e-12)
+        item["mean_rel"] = float(item["mean_abs"] / scale)
+        item["max_rel"] = float(item["max_abs"] / scale)
+        item["rmse_rel"] = float(item["rmse"] / scale)
+    return comparisons
+
+
+def build_node_ranking(comparisons, suggest_metric, quantized_sources):
+    nodes = {}
+    for item in comparisons:
+        node_name = item["float_node_name"]
+        if not node_name:
+            continue
+        entry = nodes.setdefault(
+            node_name,
+            {
+                "node_name": node_name,
+                "float_op_type": item["float_op_type"],
+                "quant_op_type": item["quant_op_type"],
+                "is_quantized_source": node_name in quantized_sources,
+                "output_count": 0,
+                "element_count": 0,
+                "mean_abs_sum": 0.0,
+                "rmse_sum": 0.0,
+                "float_mean_abs_sum": 0.0,
+                "max_abs": 0.0,
+                "max_rel": 0.0,
+                "mean_rel": 0.0,
+                "rmse_rel": 0.0,
+            },
+        )
+        entry["output_count"] += 1
+        entry["element_count"] += item["element_count"]
+        entry["mean_abs_sum"] += item["mean_abs"]
+        entry["rmse_sum"] += item["rmse"]
+        entry["float_mean_abs_sum"] += item["float_mean_abs"]
+        entry["max_abs"] = max(entry["max_abs"], item["max_abs"])
+        entry["max_rel"] = max(entry["max_rel"], item["max_rel"])
+
+    ranking = []
+    for entry in nodes.values():
+        output_count = max(entry["output_count"], 1)
+        scale = max(entry["float_mean_abs_sum"] / output_count, 1e-12)
+        mean_abs = entry["mean_abs_sum"] / output_count
+        rmse = entry["rmse_sum"] / output_count
+        node_summary = {
+            "node_name": entry["node_name"],
+            "float_op_type": entry["float_op_type"],
+            "quant_op_type": entry["quant_op_type"],
+            "is_quantized_source": entry["is_quantized_source"],
+            "output_count": entry["output_count"],
+            "element_count": entry["element_count"],
+            "mean_abs": float(mean_abs),
+            "max_abs": float(entry["max_abs"]),
+            "rmse": float(rmse),
+            "mean_rel": float(mean_abs / scale),
+            "max_rel": float(entry["max_rel"]),
+            "rmse_rel": float(rmse / scale),
+        }
+        node_summary["suggest_metric"] = float(node_summary[suggest_metric])
+        ranking.append(node_summary)
+
+    ranking.sort(key=lambda item: item["suggest_metric"], reverse=True)
+    return ranking
+
+
 def shared_initializer_summary(float_model_path, quant_model_path):
     float_model = onnx.load(float_model_path, load_external_data=False)
     quant_model = onnx.load(quant_model_path, load_external_data=False)
@@ -334,11 +468,14 @@ def shared_initializer_summary(float_model_path, quant_model_path):
 
 
 payload = json.loads(sys.argv[1])
-examples = read_examples(
-    payload["tsv"],
+examples, source_counts = read_examples(
+    payload["tsv_paths"],
+    payload["input_dir"],
+    payload["pattern"],
     payload["premise"],
     payload["hypothesis"],
-    payload["max_examples"],
+    payload["max_examples_per_source"],
+    payload["max_total_examples"],
 )
 float_inputs = model_input_names(payload["float_model"])
 quant_inputs = model_input_names(payload["quantized_model"])
@@ -381,7 +518,12 @@ comparison = compare_activations(
     output_name_metadata(payload["float_model"]),
     output_name_metadata(payload["quantized_model"]),
 )
-comparison.sort(key=lambda item: item["max_abs"], reverse=True)
+comparison = enrich_comparisons(comparison)
+quantized_sources = quantized_source_nodes(payload["quantized_model"])
+for item in comparison:
+    item["is_quantized_source"] = item["float_node_name"] in quantized_sources
+comparison.sort(key=lambda item: item[payload["suggest_by"]], reverse=True)
+node_ranking = build_node_ranking(comparison, payload["suggest_by"], quantized_sources)
 
 weight_matching_count = 0
 weight_matching_error = ""
@@ -399,30 +541,35 @@ result = {
         }
         for example in examples
     ],
+    "source_counts": source_counts,
     "float_model": payload["float_model"],
     "quantized_model": payload["quantized_model"],
     "tokenizer_source": payload["tokenizer_source"],
     "op_types": payload["op_types"],
+    "suggest_by": payload["suggest_by"],
     "float_activation_count": len(float_activations),
     "quantized_activation_count": len(quant_activations),
     "shared_activation_count": len(comparison),
+    "quantized_source_node_count": len(quantized_sources),
     "shared_initializer_summary": shared_initializer_summary(
         payload["float_model"], payload["quantized_model"]
     ),
     "weight_matching_count": weight_matching_count,
     "weight_matching_error": weight_matching_error,
     "top_drift": comparison[: payload["top"]],
+    "top_nodes": node_ranking[: payload["top"]],
+    "top_quantized_nodes": [item for item in node_ranking if item["is_quantized_source"]][: payload["top"]],
     "suggested_nodes_to_exclude": [],
 }
 
 suggested = []
-for item in comparison:
+for item in node_ranking:
     if item["float_op_type"] != "MatMul":
         continue
-    if item["quant_op_type"] != "Mul":
+    if not item["is_quantized_source"]:
         continue
-    node_name = item["float_node_name"]
-    if not node_name or node_name in suggested:
+    node_name = item["node_name"]
+    if node_name in suggested:
         continue
     suggested.append(node_name)
     if len(suggested) >= payload["suggest_exclusions"]:
@@ -437,11 +584,15 @@ print(json.dumps(result))
         "tokenizer_source": args.tokenizer_source,
         "premise": args.premise,
         "hypothesis": args.hypothesis,
-        "tsv": args.tsv,
-        "max_examples": args.max_examples,
+        "tsv_paths": args.tsv_paths,
+        "input_dir": args.input_dir,
+        "pattern": args.pattern,
+        "max_examples_per_source": args.max_examples_per_source,
+        "max_total_examples": args.max_total_examples,
         "op_types": op_types,
         "top": args.top,
         "suggest_exclusions": args.suggest_exclusions,
+        "suggest_by": args.suggest_by,
     }
     result = subprocess.run(
         [python_executable, "-c", helper, json.dumps(payload)],
@@ -451,13 +602,22 @@ print(json.dumps(result))
     )
     report = json.loads(result.stdout)
 
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0
+
     print(f"float_model: {report['float_model']}")
     print(f"quantized_model: {report['quantized_model']}")
     print(f"tokenizer_source: {report['tokenizer_source']}")
     print(
         f"examples: {len(report['examples'])}  "
-        f"saved_op_types: {report['op_types'] or 'ALL'}"
+        f"saved_op_types: {report['op_types'] or 'ALL'}  "
+        f"suggest_by: {report['suggest_by']}"
     )
+    if report["source_counts"]:
+        print("source_counts:")
+        for source, count in report["source_counts"].items():
+            print(f"  - {source}: {count}")
     for example in report["examples"]:
         print(f"  - {example['id']}: {example['premise']} || {example['hypothesis']}")
     print(
@@ -465,6 +625,7 @@ print(json.dumps(result))
         f"quantized={report['quantized_activation_count']} "
         f"shared={report['shared_activation_count']}"
     )
+    print(f"quantized_source_node_count: {report['quantized_source_node_count']}")
     print(f"initializer_summary: {report['shared_initializer_summary']}")
     print(
         f"weight_matching_count: {report['weight_matching_count']}"
@@ -479,11 +640,37 @@ print(json.dumps(result))
         print(
             f"  - {item['name']}: max_abs={item['max_abs']:.6f} "
             f"mean_abs={item['mean_abs']:.6f} rmse={item['rmse']:.6f} "
+            f"max_rel={item['max_rel']:.6f} mean_rel={item['mean_rel']:.6f} "
+            f"rmse_rel={item['rmse_rel']:.6f} "
+            f"quantized_source={item['is_quantized_source']} "
             f"elements={item['element_count']} "
             f"float_op={item['float_op_type'] or '?'} "
             f"quant_op={item['quant_op_type'] or '?'} "
             f"float_node={item['float_node_name'] or '?'} "
             f"quant_node={item['quant_node_name'] or '?'}"
+        )
+    print("top_nodes:")
+    for item in report["top_nodes"]:
+        print(
+            f"  - {item['node_name']}: max_abs={item['max_abs']:.6f} "
+            f"mean_abs={item['mean_abs']:.6f} rmse={item['rmse']:.6f} "
+            f"max_rel={item['max_rel']:.6f} mean_rel={item['mean_rel']:.6f} "
+            f"rmse_rel={item['rmse_rel']:.6f} "
+            f"quantized_source={item['is_quantized_source']} "
+            f"outputs={item['output_count']} elements={item['element_count']} "
+            f"float_op={item['float_op_type'] or '?'} "
+            f"quant_op={item['quant_op_type'] or '?'}"
+        )
+    print("top_quantized_nodes:")
+    for item in report["top_quantized_nodes"]:
+        print(
+            f"  - {item['node_name']}: max_abs={item['max_abs']:.6f} "
+            f"mean_abs={item['mean_abs']:.6f} rmse={item['rmse']:.6f} "
+            f"max_rel={item['max_rel']:.6f} mean_rel={item['mean_rel']:.6f} "
+            f"rmse_rel={item['rmse_rel']:.6f} "
+            f"outputs={item['output_count']} elements={item['element_count']} "
+            f"float_op={item['float_op_type'] or '?'} "
+            f"quant_op={item['quant_op_type'] or '?'}"
         )
     if report["suggested_nodes_to_exclude"]:
         print("suggested_nodes_to_exclude:")

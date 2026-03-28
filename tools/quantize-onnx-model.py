@@ -36,6 +36,9 @@ def parse_args() -> argparse.Namespace:
               .venv/bin/python tools/quantize-onnx-model.py --preset single \\
                 --output models/mdeberta/onnx/candidates/matmul_pc.onnx \\
                 --per-channel --op-type MatMul
+              .venv/bin/python tools/quantize-onnx-model.py --preset single \\
+                --preprocess --output models/mdeberta/onnx/candidates/matmul_pre.onnx \\
+                --op-type MatMul
             """
         ),
     )
@@ -92,6 +95,16 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="Overwrite outputs that already exist",
+    )
+    parser.add_argument(
+        "--preprocess",
+        action="store_true",
+        help="Run ORT quant_pre_process on the float model before quantization",
+    )
+    parser.add_argument(
+        "--skip-preprocess-optimization",
+        action="store_true",
+        help="Disable graph optimization during quant_pre_process",
     )
     parser.add_argument(
         "--install-deps",
@@ -162,6 +175,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
                 "nodes_to_exclude": [
                     node.strip() for node in args.nodes_to_exclude.split(",") if node.strip()
                 ],
+                "preprocess": args.preprocess,
+                "skip_preprocess_optimization": args.skip_preprocess_optimization,
             }
         ]
 
@@ -175,6 +190,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": [],
             "nodes_to_exclude": [],
+            "preprocess": False,
+            "skip_preprocess_optimization": False,
         },
         {
             "name": "dynamic_qint8_per_channel",
@@ -184,6 +201,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": [],
             "nodes_to_exclude": [],
+            "preprocess": False,
+            "skip_preprocess_optimization": False,
         },
         {
             "name": "dynamic_qint8_matmul",
@@ -193,6 +212,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "preprocess": False,
+            "skip_preprocess_optimization": False,
         },
         {
             "name": "dynamic_qint8_matmul_per_channel",
@@ -202,6 +223,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "preprocess": False,
+            "skip_preprocess_optimization": False,
         },
         {
             "name": "dynamic_quint8_matmul",
@@ -211,6 +234,8 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "preprocess": False,
+            "skip_preprocess_optimization": False,
         },
     ]
 
@@ -240,6 +265,7 @@ import sys
 import tempfile
 
 from onnxruntime.quantization import QuantType, quantize_dynamic
+from onnxruntime.quantization.shape_inference import quant_pre_process
 
 input_model = sys.argv[1]
 specs = json.loads(sys.argv[2])
@@ -262,8 +288,19 @@ for spec in specs:
         except OSError:
             shutil.copy2(input_model, staged_input)
 
+        quant_input = staged_input
+        if spec.get("preprocess"):
+            preprocessed_input = pathlib.Path(tmp_dir) / "preprocessed.onnx"
+            quant_pre_process(
+                str(staged_input),
+                str(preprocessed_input),
+                skip_optimization=spec.get("skip_preprocess_optimization", False),
+                save_as_external_data=False,
+            )
+            quant_input = preprocessed_input
+
         quantize_dynamic(
-            str(staged_input),
+            str(quant_input),
             str(output_path),
             per_channel=spec["per_channel"],
             reduce_range=spec["reduce_range"],
@@ -296,7 +333,9 @@ for spec in specs:
             f"  config: weight_type={spec['weight_type']} "
             f"per_channel={spec['per_channel']} reduce_range={spec['reduce_range']} "
             f"op_types={spec['op_types'] or 'default'} "
-            f"nodes_to_exclude={spec['nodes_to_exclude'] or []}"
+            f"nodes_to_exclude={spec['nodes_to_exclude'] or []} "
+            f"preprocess={spec['preprocess']} "
+            f"skip_preprocess_optimization={spec['skip_preprocess_optimization']}"
         )
         print(
             "  compare: "
