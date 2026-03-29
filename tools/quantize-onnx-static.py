@@ -319,12 +319,32 @@ def build_feeds(tokenizer_source, model_inputs, examples):
         local_files_only=pathlib.Path(tokenizer_source).exists(),
         use_fast=True,
     )
+    token_limit = tokenizer.model_max_length
+    if not isinstance(token_limit, int) or token_limit <= 0 or token_limit > 8192:
+        token_limit = 512
+
+    target_length = 0
+    for premise, hypothesis in examples:
+        encoded = tokenizer(
+            premise,
+            hypothesis,
+            truncation=True,
+            max_length=token_limit,
+        )
+        for value in encoded.values():
+            if hasattr(value, "__len__"):
+                target_length = max(target_length, len(value))
+    if target_length <= 0:
+        raise RuntimeError("Unable to determine a fixed calibration sequence length")
+
     feeds = []
     for premise, hypothesis in examples:
         encoded = tokenizer(
             premise,
             hypothesis,
             truncation=True,
+            padding="max_length",
+            max_length=target_length,
             return_tensors="np",
         )
         feed = {}
