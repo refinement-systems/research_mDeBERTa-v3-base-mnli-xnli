@@ -11,6 +11,12 @@ import tempfile
 import textwrap
 import venv
 
+from mdeberta_onnx_quantization import (
+    SUPPORTED_IGNORE_FAMILIES,
+    ignored_nodes_for_family,
+    parse_nodes_csv,
+)
+
 
 DEFAULT_INPUT = "models/mdeberta/onnx/model.onnx"
 DEFAULT_OUTPUT = "models/mdeberta/onnx/candidates/static_qdq_qint8_matmul.onnx"
@@ -90,6 +96,20 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Operator type to quantize. Repeat to add more. Defaults to MatMul.",
+    )
+    parser.add_argument(
+        "--nodes-to-exclude",
+        default="",
+        help="Comma-separated node names to exclude from quantization.",
+    )
+    parser.add_argument(
+        "--ignore-family",
+        choices=SUPPORTED_IGNORE_FAMILIES,
+        default="none",
+        help=(
+            "Structured exclusion family to keep in float. "
+            f"Choices: {', '.join(SUPPORTED_IGNORE_FAMILIES)} (default: none)"
+        ),
     )
     parser.add_argument(
         "--quant-format",
@@ -201,6 +221,8 @@ def ensure_python(args: argparse.Namespace) -> str:
 def main() -> int:
     args = parse_args()
     python_executable = ensure_python(args)
+    if args.quant_format != "qdq":
+        raise RuntimeError("Attempt1 static quantization only supports --quant-format=qdq")
 
     input_model = pathlib.Path(args.input)
     if not input_model.exists():
@@ -377,6 +399,7 @@ with tempfile.TemporaryDirectory(prefix="nli-static-quantize-") as tmp_dir:
         reader,
         quant_format=quant_format(payload["quant_format"]),
         op_types_to_quantize=payload["op_types"] or None,
+        nodes_to_exclude=payload["nodes_to_exclude"] or None,
         per_channel=payload["per_channel"],
         reduce_range=payload["reduce_range"],
         activation_type=quant_type(payload["activation_type"]),
@@ -393,6 +416,8 @@ result = {
     "calibration_example_count": len(examples),
     "source_counts": source_counts,
     "op_types": payload["op_types"] or ["MatMul"],
+    "nodes_to_exclude": payload["nodes_to_exclude"],
+    "ignore_family": payload["ignore_family"],
     "quant_format": payload["quant_format"],
     "activation_type": payload["activation_type"],
     "weight_type": payload["weight_type"],
@@ -415,6 +440,11 @@ print(json.dumps(result))
         "max_examples_per_source": args.max_examples_per_source,
         "max_total_examples": args.max_total_examples,
         "op_types": args.op_types or ["MatMul"],
+        "nodes_to_exclude": sorted(
+            set(parse_nodes_csv(args.nodes_to_exclude))
+            | set(ignored_nodes_for_family(input_model, args.ignore_family))
+        ),
+        "ignore_family": args.ignore_family,
         "quant_format": args.quant_format,
         "activation_type": args.activation_type,
         "weight_type": args.weight_type,
@@ -444,6 +474,8 @@ print(json.dumps(result))
     print(f"  source_counts: {report['source_counts']}")
     print(
         f"  config: op_types={report['op_types']} "
+        f"ignore_family={report['ignore_family']} "
+        f"nodes_to_exclude={report['nodes_to_exclude']} "
         f"quant_format={report['quant_format']} "
         f"activation_type={report['activation_type']} "
         f"weight_type={report['weight_type']} "

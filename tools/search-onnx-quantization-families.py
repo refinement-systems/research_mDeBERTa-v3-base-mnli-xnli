@@ -10,6 +10,13 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+from mdeberta_onnx_quantization import (
+    LAYER_PATTERN,
+    layer_subset,
+    load_matmul_families,
+    merge_nodes,
+)
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_FLOAT_MODEL = REPO_ROOT / "models/mdeberta/onnx/model.onnx"
@@ -36,7 +43,6 @@ DEFAULT_BENCHMARKS = [
     REPO_ROOT / "benchmarks/nli/xnli-fr-test-50-per-label.tsv",
     REPO_ROOT / "benchmarks/nli/xnli-zh-test-50-per-label.tsv",
 ]
-LAYER_PATTERN = re.compile(r"^/deberta/encoder/layer\.(\d+)/")
 STATIC_CANDIDATE_DESCRIPTIONS = [
     (
         "current_best_reference",
@@ -217,90 +223,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional path to write the aggregate summary as CSV.",
     )
     return parser.parse_args()
-
-
-def load_matmul_families(model_path: pathlib.Path) -> dict[str, object]:
-    import onnx
-
-    model = onnx.load(model_path, load_external_data=False)
-    families = {
-        "all_quantizable": [],
-        "attention_proj": [],
-        "attention_output": [],
-        "ffn_intermediate": [],
-        "ffn_output": [],
-        "ffn_all": [],
-        "attention_all": [],
-        "layer_all": {},
-    }
-
-    for node in model.graph.node:
-        if node.op_type != "MatMul" or not node.name.startswith("/deberta/encoder/layer."):
-            continue
-
-        layer_match = LAYER_PATTERN.match(node.name)
-        if not layer_match:
-            continue
-        layer_index = int(layer_match.group(1))
-
-        family = None
-        if any(
-            token in node.name
-            for token in (
-                "/attention/self/query_proj/MatMul",
-                "/attention/self/key_proj/MatMul",
-                "/attention/self/value_proj/MatMul",
-                "/attention/self/query_proj_1/MatMul",
-                "/attention/self/key_proj_1/MatMul",
-            )
-        ):
-            family = "attention_proj"
-        elif "/attention/output/dense/MatMul" in node.name:
-            family = "attention_output"
-        elif "/intermediate/dense/MatMul" in node.name:
-            family = "ffn_intermediate"
-        elif "/output/dense/MatMul" in node.name:
-            family = "ffn_output"
-
-        if not family:
-            continue
-
-        families["all_quantizable"].append(node.name)
-        families[family].append(node.name)
-        families["layer_all"].setdefault(layer_index, []).append(node.name)
-
-    families["attention_all"] = sorted(
-        families["attention_proj"] + families["attention_output"]
-    )
-    families["ffn_all"] = sorted(families["ffn_intermediate"] + families["ffn_output"])
-    families["all_quantizable"] = sorted(families["all_quantizable"])
-    for key in ("attention_proj", "attention_output", "ffn_intermediate", "ffn_output"):
-        families[key] = sorted(families[key])
-    for layer_index, names in list(families["layer_all"].items()):
-        families["layer_all"][layer_index] = sorted(names)
-
-    return families
-
-
-def layer_subset(names: list[str], start: int, end: int) -> list[str]:
-    selected = []
-    for name in names:
-        layer_match = LAYER_PATTERN.match(name)
-        if not layer_match:
-            continue
-        layer_index = int(layer_match.group(1))
-        if start <= layer_index <= end:
-            selected.append(name)
-    return sorted(selected)
-
-
-def merge_nodes(*node_lists: list[str]) -> list[str]:
-    merged = set()
-    for node_list in node_lists:
-        merged.update(node_list)
-    return sorted(merged)
-
-
 def make_candidate_specs(
     output_dir: pathlib.Path,
     families: dict[str, object],

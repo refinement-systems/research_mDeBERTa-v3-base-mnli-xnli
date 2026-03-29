@@ -27,6 +27,7 @@ class ExportTarget:
     config: str
     split: str
     per_label: int
+    skip_per_label: int
     output_name: str
 
 
@@ -81,6 +82,43 @@ def parse_args() -> argparse.Namespace:
         help="Do not download XNLI test slices.",
     )
     parser.add_argument(
+        "--mnli-split",
+        action="append",
+        dest="mnli_splits",
+        help=(
+            "MNLI split to fetch. Repeat to override the defaults of validation_matched and "
+            "validation_mismatched."
+        ),
+    )
+    parser.add_argument(
+        "--xnli-split",
+        default="test",
+        help="XNLI split to fetch (default: test).",
+    )
+    parser.add_argument(
+        "--skip-per-label",
+        type=int,
+        default=0,
+        help="Skip this many examples per label before collecting the balanced slice (default: 0).",
+    )
+    parser.add_argument(
+        "--mnli-skip-per-label",
+        type=int,
+        default=None,
+        help="Optional MNLI-specific per-label skip count. Defaults to --skip-per-label.",
+    )
+    parser.add_argument(
+        "--xnli-skip-per-label",
+        type=int,
+        default=None,
+        help="Optional XNLI-specific per-label skip count. Defaults to --skip-per-label.",
+    )
+    parser.add_argument(
+        "--name-tag",
+        default="",
+        help="Optional tag inserted into generated filenames, e.g. calibration or search-validation.",
+    )
+    parser.add_argument(
         "--page-size",
         type=int,
         default=DEFAULT_PAGE_SIZE,
@@ -111,6 +149,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("--mnli-per-label must be non-negative")
     if args.xnli_per_label < 0:
         parser.error("--xnli-per-label must be non-negative")
+    if args.skip_per_label < 0:
+        parser.error("--skip-per-label must be non-negative")
+    if args.mnli_skip_per_label is not None and args.mnli_skip_per_label < 0:
+        parser.error("--mnli-skip-per-label must be non-negative")
+    if args.xnli_skip_per_label is not None and args.xnli_skip_per_label < 0:
+        parser.error("--xnli-skip-per-label must be non-negative")
 
     return args
 
@@ -175,18 +219,47 @@ def output_path_for(base_dir: pathlib.Path, target: ExportTarget) -> pathlib.Pat
     return base_dir / target.output_name
 
 
+def tagged_output_name(
+    prefix: str,
+    split: str,
+    per_label: int,
+    name_tag: str,
+    skip_per_label: int,
+) -> str:
+    parts = [prefix, split]
+    if name_tag:
+        parts.append(name_tag)
+    if skip_per_label > 0:
+        parts.append(f"skip{skip_per_label}")
+    parts.append(f"{per_label}-per-label.tsv")
+    return "-".join(parts)
+
+
 def build_targets(args: argparse.Namespace) -> list[ExportTarget]:
     targets: list[ExportTarget] = []
+    mnli_skip = args.mnli_skip_per_label
+    if mnli_skip is None:
+        mnli_skip = args.skip_per_label
+    xnli_skip = args.xnli_skip_per_label
+    if xnli_skip is None:
+        xnli_skip = args.skip_per_label
 
     if not args.skip_mnli and args.mnli_per_label > 0:
-        for split in ("validation_matched", "validation_mismatched"):
+        for split in (args.mnli_splits or ["validation_matched", "validation_mismatched"]):
             targets.append(
                 ExportTarget(
                     dataset="nyu-mll/multi_nli",
                     config="default",
                     split=split,
                     per_label=args.mnli_per_label,
-                    output_name=f"mnli-{split}-{args.mnli_per_label}-per-label.tsv",
+                    skip_per_label=mnli_skip,
+                    output_name=tagged_output_name(
+                        "mnli",
+                        split,
+                        args.mnli_per_label,
+                        args.name_tag,
+                        mnli_skip,
+                    ),
                 )
             )
 
@@ -197,9 +270,16 @@ def build_targets(args: argparse.Namespace) -> list[ExportTarget]:
                 ExportTarget(
                     dataset="facebook/xnli",
                     config=language,
-                    split="test",
+                    split=args.xnli_split,
                     per_label=args.xnli_per_label,
-                    output_name=f"xnli-{language}-test-{args.xnli_per_label}-per-label.tsv",
+                    skip_per_label=xnli_skip,
+                    output_name=tagged_output_name(
+                        f"xnli-{language}",
+                        args.xnli_split,
+                        args.xnli_per_label,
+                        args.name_tag,
+                        xnli_skip,
+                    ),
                 )
             )
 
@@ -216,6 +296,7 @@ def collect_balanced_examples(
     seed: int,
 ) -> list[dict[str, object]]:
     kept_by_label = {label: [] for label in LABELS}
+    skipped_by_label = {label: 0 for label in LABELS}
     offset = 0
     total_rows = None
     label_names: list[str] | None = None
@@ -258,6 +339,9 @@ def collect_balanced_examples(
                 continue
 
             label = normalize_label(row.get("label"), label_names)
+            if skipped_by_label[label] < target.skip_per_label:
+                skipped_by_label[label] += 1
+                continue
             if len(kept_by_label[label]) >= target.per_label:
                 continue
 
@@ -286,7 +370,10 @@ def collect_balanced_examples(
 
     missing = [label for label, rows in kept_by_label.items() if len(rows) < target.per_label]
     if missing:
-        counts = ", ".join(f"{label}={len(kept_by_label[label])}" for label in LABELS)
+        counts = ", ".join(
+            f"{label}=kept:{len(kept_by_label[label])}/skipped:{skipped_by_label[label]}"
+            for label in LABELS
+        )
         raise RuntimeError(
             f"Could not collect {target.per_label} examples per label for "
             f"{target.dataset}/{target.config}/{target.split}; got {counts}"
