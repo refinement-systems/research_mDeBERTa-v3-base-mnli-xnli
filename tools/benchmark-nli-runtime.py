@@ -7,6 +7,7 @@ import math
 import pathlib
 import platform
 import random
+import re
 import statistics
 import subprocess
 import sys
@@ -122,6 +123,11 @@ def parse_args() -> argparse.Namespace:
         help="Print per-benchmark runtime summaries.",
     )
     parser.add_argument(
+        "--measure-rss",
+        action="store_true",
+        help="Capture resident memory snapshots emitted by the benchmark executables.",
+    )
+    parser.add_argument(
         "--summary-json",
         default="",
         help="Optional JSON output path.",
@@ -219,6 +225,13 @@ def parse_float(value: str) -> float:
     return float(value)
 
 
+def parse_optional_float(parsed: dict[str, str], key: str) -> float | None:
+    value = parsed.get(key, "")
+    if not value:
+        return None
+    return float(value)
+
+
 def parse_float_list(value: str) -> list[float]:
     if not value:
         return []
@@ -243,6 +256,21 @@ def summarize_numeric(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def parse_time_l_max_rss_bytes(stderr: str) -> float | None:
+    match = re.search(r"^\s*(\d+)\s+maximum resident set size\s*$", stderr, re.MULTILINE)
+    if not match:
+        return None
+    return float(match.group(1))
+
+
+def maybe_wrap_with_time(command: list[str], measure_rss: bool) -> list[str]:
+    if not measure_rss:
+        return command
+    if platform.system() != "Darwin":
+        raise RuntimeError("--measure-rss currently requires macOS /usr/bin/time -l support")
+    return ["/usr/bin/time", "-l", *command]
+
+
 def benchmark_model_backend_coldstart(
     executable: pathlib.Path,
     model_path: pathlib.Path,
@@ -250,9 +278,17 @@ def benchmark_model_backend_coldstart(
     repeat: int,
     warmup: int,
     examples: list[Example],
+    measure_rss: bool,
 ) -> dict[str, object]:
     load_values: list[float] = []
     warm_run_values: list[float] = []
+    resident_after_load_values: list[float] = []
+    resident_after_warmup_values: list[float] = []
+    resident_after_timed_runs_values: list[float] = []
+    peak_rss_after_load_values: list[float] = []
+    peak_rss_after_warmup_values: list[float] = []
+    peak_rss_after_timed_runs_values: list[float] = []
+    time_l_peak_rss_values: list[float] = []
     per_example: list[dict[str, object]] = []
 
     for example in examples:
@@ -275,7 +311,7 @@ def benchmark_model_backend_coldstart(
             "--quiet",
         ]
         completed = subprocess.run(
-            command,
+            maybe_wrap_with_time(command, measure_rss),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -292,8 +328,29 @@ def benchmark_model_backend_coldstart(
         parsed = parse_key_value_output(completed.stdout)
         load_ms = parse_float(parsed["load_ms"])
         runs_ms = parse_float_list(parsed.get("timing_runs_ms", ""))
+        resident_after_load = parse_optional_float(parsed, "resident_after_load_bytes")
+        resident_after_warmup = parse_optional_float(parsed, "resident_after_warmup_bytes")
+        resident_after_timed_runs = parse_optional_float(parsed, "resident_after_timed_runs_bytes")
+        peak_rss_after_load = parse_optional_float(parsed, "peak_rss_after_load_bytes")
+        peak_rss_after_warmup = parse_optional_float(parsed, "peak_rss_after_warmup_bytes")
+        peak_rss_after_timed_runs = parse_optional_float(parsed, "peak_rss_after_timed_runs_bytes")
+        time_l_peak_rss = parse_time_l_max_rss_bytes(completed.stderr) if measure_rss else None
         load_values.append(load_ms)
         warm_run_values.extend(runs_ms)
+        if resident_after_load is not None:
+            resident_after_load_values.append(resident_after_load)
+        if resident_after_warmup is not None:
+            resident_after_warmup_values.append(resident_after_warmup)
+        if resident_after_timed_runs is not None:
+            resident_after_timed_runs_values.append(resident_after_timed_runs)
+        if peak_rss_after_load is not None:
+            peak_rss_after_load_values.append(peak_rss_after_load)
+        if peak_rss_after_warmup is not None:
+            peak_rss_after_warmup_values.append(peak_rss_after_warmup)
+        if peak_rss_after_timed_runs is not None:
+            peak_rss_after_timed_runs_values.append(peak_rss_after_timed_runs)
+        if time_l_peak_rss is not None:
+            time_l_peak_rss_values.append(time_l_peak_rss)
         per_example.append(
             {
                 "benchmark": example.benchmark,
@@ -303,6 +360,13 @@ def benchmark_model_backend_coldstart(
                 "timing_median_ms": parse_float(parsed["timing_median_ms"]),
                 "timing_p95_ms": parse_float(parsed["timing_p95_ms"]),
                 "timing_runs_ms": runs_ms,
+                "resident_after_load_bytes": resident_after_load,
+                "resident_after_warmup_bytes": resident_after_warmup,
+                "resident_after_timed_runs_bytes": resident_after_timed_runs,
+                "peak_rss_after_load_bytes": peak_rss_after_load,
+                "peak_rss_after_warmup_bytes": peak_rss_after_warmup,
+                "peak_rss_after_timed_runs_bytes": peak_rss_after_timed_runs,
+                "time_l_peak_rss_bytes": time_l_peak_rss,
             }
         )
 
@@ -326,6 +390,13 @@ def benchmark_model_backend_coldstart(
         "file_size_bytes": model_path.stat().st_size,
         "load_ms": summarize_numeric(load_values),
         "warm_latency_ms": summarize_numeric(warm_run_values),
+        "resident_after_load_bytes": summarize_numeric(resident_after_load_values),
+        "resident_after_warmup_bytes": summarize_numeric(resident_after_warmup_values),
+        "resident_after_timed_runs_bytes": summarize_numeric(resident_after_timed_runs_values),
+        "peak_rss_after_load_bytes": summarize_numeric(peak_rss_after_load_values),
+        "peak_rss_after_warmup_bytes": summarize_numeric(peak_rss_after_warmup_values),
+        "peak_rss_after_timed_runs_bytes": summarize_numeric(peak_rss_after_timed_runs_values),
+        "time_l_peak_rss_bytes": summarize_numeric(time_l_peak_rss_values),
         "per_benchmark": per_benchmark,
         "per_example": per_example,
     }
@@ -368,6 +439,7 @@ def benchmark_model_backend_persistent(
     repeat: int,
     warmup: int,
     examples: list[Example],
+    measure_rss: bool,
 ) -> dict[str, object]:
     temp_tsv = write_temp_examples_tsv(examples)
     try:
@@ -385,7 +457,7 @@ def benchmark_model_backend_persistent(
             str(temp_tsv),
         ]
         completed = subprocess.run(
-            command,
+            maybe_wrap_with_time(command, measure_rss),
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -402,6 +474,13 @@ def benchmark_model_backend_persistent(
         parsed = parse_key_value_output(completed.stdout)
         benchmark_rows = parse_structured_line(completed.stdout, "benchmark_timing")
         example_rows = parse_structured_line(completed.stdout, "example_timing")
+        resident_after_load = parse_optional_float(parsed, "resident_after_load_bytes")
+        resident_after_warmup = parse_optional_float(parsed, "resident_after_warmup_bytes")
+        resident_after_timed_runs = parse_optional_float(parsed, "resident_after_timed_runs_bytes")
+        peak_rss_after_load = parse_optional_float(parsed, "peak_rss_after_load_bytes")
+        peak_rss_after_warmup = parse_optional_float(parsed, "peak_rss_after_warmup_bytes")
+        peak_rss_after_timed_runs = parse_optional_float(parsed, "peak_rss_after_timed_runs_bytes")
+        time_l_peak_rss = parse_time_l_max_rss_bytes(completed.stderr) if measure_rss else None
 
         per_benchmark = {}
         for row in benchmark_rows:
@@ -442,6 +521,20 @@ def benchmark_model_backend_persistent(
                 "min": parse_float(parsed["timing_min_ms"]),
                 "max": parse_float(parsed["timing_max_ms"]),
             },
+            "resident_after_load_bytes": summarize_numeric(
+                [resident_after_load] if resident_after_load is not None else []),
+            "resident_after_warmup_bytes": summarize_numeric(
+                [resident_after_warmup] if resident_after_warmup is not None else []),
+            "resident_after_timed_runs_bytes": summarize_numeric(
+                [resident_after_timed_runs] if resident_after_timed_runs is not None else []),
+            "peak_rss_after_load_bytes": summarize_numeric(
+                [peak_rss_after_load] if peak_rss_after_load is not None else []),
+            "peak_rss_after_warmup_bytes": summarize_numeric(
+                [peak_rss_after_warmup] if peak_rss_after_warmup is not None else []),
+            "peak_rss_after_timed_runs_bytes": summarize_numeric(
+                [peak_rss_after_timed_runs] if peak_rss_after_timed_runs is not None else []),
+            "time_l_peak_rss_bytes": summarize_numeric(
+                [time_l_peak_rss] if time_l_peak_rss is not None else []),
             "per_benchmark": per_benchmark,
             "per_example": per_example,
         }
@@ -450,14 +543,22 @@ def benchmark_model_backend_persistent(
 
 
 def print_summary(rows: list[dict[str, object]]) -> None:
+    has_memory = any(
+        row["resident_after_warmup_bytes"]["median"] is not None or
+        row["peak_rss_after_timed_runs_bytes"]["median"] is not None or
+        row["time_l_peak_rss_bytes"]["median"] is not None
+        for row in rows
+    )
     header = (
         f"{'candidate':<22} {'backend':<8} {'mode':<11} {'size_mb':>8} "
         f"{'load_med':>10} {'warm_med':>10} {'warm_p95':>10}"
     )
+    if has_memory:
+        header += f" {'rss_warm':>10} {'rss_peak':>10}"
     print(header)
     print("-" * len(header))
     for row in rows:
-        print(
+        line = (
             f"{row['candidate']:<22} "
             f"{row['backend']:<8} "
             f"{row['mode']:<11} "
@@ -466,6 +567,15 @@ def print_summary(rows: list[dict[str, object]]) -> None:
             f"{row['warm_latency_ms']['median']:>10.3f} "
             f"{row['warm_latency_ms']['p95']:>10.3f}"
         )
+        if has_memory:
+            warm_bytes = row["resident_after_warmup_bytes"]["median"]
+            peak_bytes = row["peak_rss_after_timed_runs_bytes"]["median"]
+            if peak_bytes is None:
+                peak_bytes = row["time_l_peak_rss_bytes"]["median"]
+            warm_mb = warm_bytes / (1024.0 * 1024.0) if warm_bytes is not None else float("nan")
+            peak_mb = peak_bytes / (1024.0 * 1024.0) if peak_bytes is not None else float("nan")
+            line += f" {warm_mb:>10.2f} {peak_mb:>10.2f}"
+        print(line)
 
 
 def print_per_benchmark(rows: list[dict[str, object]]) -> None:
@@ -502,6 +612,27 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
         "warm_p95_ms",
         "warm_min_ms",
         "warm_max_ms",
+        "resident_after_load_mean_bytes",
+        "resident_after_load_median_bytes",
+        "resident_after_load_p95_bytes",
+        "resident_after_warmup_mean_bytes",
+        "resident_after_warmup_median_bytes",
+        "resident_after_warmup_p95_bytes",
+        "resident_after_timed_runs_mean_bytes",
+        "resident_after_timed_runs_median_bytes",
+        "resident_after_timed_runs_p95_bytes",
+        "peak_rss_after_load_mean_bytes",
+        "peak_rss_after_load_median_bytes",
+        "peak_rss_after_load_p95_bytes",
+        "peak_rss_after_warmup_mean_bytes",
+        "peak_rss_after_warmup_median_bytes",
+        "peak_rss_after_warmup_p95_bytes",
+        "peak_rss_after_timed_runs_mean_bytes",
+        "peak_rss_after_timed_runs_median_bytes",
+        "peak_rss_after_timed_runs_p95_bytes",
+        "time_l_peak_rss_mean_bytes",
+        "time_l_peak_rss_median_bytes",
+        "time_l_peak_rss_p95_bytes",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -522,6 +653,27 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
                     "warm_p95_ms": row["warm_latency_ms"]["p95"],
                     "warm_min_ms": row["warm_latency_ms"]["min"],
                     "warm_max_ms": row["warm_latency_ms"]["max"],
+                    "resident_after_load_mean_bytes": row["resident_after_load_bytes"]["mean"],
+                    "resident_after_load_median_bytes": row["resident_after_load_bytes"]["median"],
+                    "resident_after_load_p95_bytes": row["resident_after_load_bytes"]["p95"],
+                    "resident_after_warmup_mean_bytes": row["resident_after_warmup_bytes"]["mean"],
+                    "resident_after_warmup_median_bytes": row["resident_after_warmup_bytes"]["median"],
+                    "resident_after_warmup_p95_bytes": row["resident_after_warmup_bytes"]["p95"],
+                    "resident_after_timed_runs_mean_bytes": row["resident_after_timed_runs_bytes"]["mean"],
+                    "resident_after_timed_runs_median_bytes": row["resident_after_timed_runs_bytes"]["median"],
+                    "resident_after_timed_runs_p95_bytes": row["resident_after_timed_runs_bytes"]["p95"],
+                    "peak_rss_after_load_mean_bytes": row["peak_rss_after_load_bytes"]["mean"],
+                    "peak_rss_after_load_median_bytes": row["peak_rss_after_load_bytes"]["median"],
+                    "peak_rss_after_load_p95_bytes": row["peak_rss_after_load_bytes"]["p95"],
+                    "peak_rss_after_warmup_mean_bytes": row["peak_rss_after_warmup_bytes"]["mean"],
+                    "peak_rss_after_warmup_median_bytes": row["peak_rss_after_warmup_bytes"]["median"],
+                    "peak_rss_after_warmup_p95_bytes": row["peak_rss_after_warmup_bytes"]["p95"],
+                    "peak_rss_after_timed_runs_mean_bytes": row["peak_rss_after_timed_runs_bytes"]["mean"],
+                    "peak_rss_after_timed_runs_median_bytes": row["peak_rss_after_timed_runs_bytes"]["median"],
+                    "peak_rss_after_timed_runs_p95_bytes": row["peak_rss_after_timed_runs_bytes"]["p95"],
+                    "time_l_peak_rss_mean_bytes": row["time_l_peak_rss_bytes"]["mean"],
+                    "time_l_peak_rss_median_bytes": row["time_l_peak_rss_bytes"]["median"],
+                    "time_l_peak_rss_p95_bytes": row["time_l_peak_rss_bytes"]["p95"],
                 }
             )
 
@@ -566,6 +718,7 @@ def main() -> int:
                     args.repeat,
                     args.warmup,
                     examples,
+                    args.measure_rss,
                 )
             else:
                 summary = benchmark_model_backend_persistent(
@@ -575,6 +728,7 @@ def main() -> int:
                     args.repeat,
                     args.warmup,
                     examples,
+                    args.measure_rss,
                 )
             rows.append(
                 {

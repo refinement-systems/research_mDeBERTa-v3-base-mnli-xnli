@@ -79,6 +79,13 @@ def mb_text_from_bytes(value: Any) -> str:
     return f"{int(value) / (1024.0 * 1024.0):.2f} MB"
 
 
+def optional_float(mapping: dict[str, Any], key: str) -> float | None:
+    value = mapping.get(key, "")
+    if value in ("", None):
+        return None
+    return float(value)
+
+
 def candidate_sort_key(candidate: str) -> tuple[int, str]:
     try:
         return (PREFERRED_ORDER.index(candidate), candidate)
@@ -159,6 +166,14 @@ def enrich_rows(
             "coreml_persistent_load_median_ms": float(coreml_persistent["load_median_ms"]),
             "coreml_persistent_warm_median_ms": float(coreml_persistent["warm_median_ms"]),
             "coreml_persistent_warm_p95_ms": float(coreml_persistent["warm_p95_ms"]),
+            "cpu_persistent_resident_after_warmup_bytes": optional_float(
+                cpu_persistent, "resident_after_warmup_median_bytes"),
+            "cpu_persistent_peak_rss_bytes": optional_float(
+                cpu_persistent, "peak_rss_after_timed_runs_median_bytes"),
+            "coreml_persistent_resident_after_warmup_bytes": optional_float(
+                coreml_persistent, "resident_after_warmup_median_bytes"),
+            "coreml_persistent_peak_rss_bytes": optional_float(
+                coreml_persistent, "peak_rss_after_timed_runs_median_bytes"),
         }
         row["full_hf_gap_vs_float"] = row["full_hf_agreement"] - float(float_full["hf_agreement"])
         row["cpu_persistent_warm_delta_vs_float_ms"] = (
@@ -229,6 +244,11 @@ def build_recommendation(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 f"{percent_text(accuracy_candidate['full_hf_agreement'])}) and does not come "
                 "with a decisive runtime or size advantage."
             ),
+            (
+                "Memory is not a reason to prefer quantization here. CPU steady RSS is broadly "
+                "flat across the finalists, while the CoreML persistent benchmark shows float "
+                "using materially less resident memory than either quantized candidate."
+            ),
         ],
         "serving_mode_caveat": (
             f"In persistent-session serving, the quantized finalists are modestly faster on warm "
@@ -261,9 +281,13 @@ def write_dashboard_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
         "cpu_persistent_load_median_ms",
         "cpu_persistent_warm_median_ms",
         "cpu_persistent_warm_delta_vs_float_ms",
+        "cpu_persistent_resident_after_warmup_bytes",
+        "cpu_persistent_peak_rss_bytes",
         "coreml_persistent_load_median_ms",
         "coreml_persistent_warm_median_ms",
         "coreml_persistent_warm_delta_vs_float_ms",
+        "coreml_persistent_resident_after_warmup_bytes",
+        "coreml_persistent_peak_rss_bytes",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -339,6 +363,44 @@ def write_dashboard_markdown(
             f"{ms_text(row['coreml_cold_load_median_ms'])} | "
             f"{ms_text(row['coreml_persistent_warm_median_ms'])} |"
         )
+    if any(
+        row["cpu_persistent_resident_after_warmup_bytes"] is not None or
+        row["coreml_persistent_resident_after_warmup_bytes"] is not None
+        for row in rows
+    ):
+        lines.extend(
+            [
+                "",
+                "## Persistent Memory",
+                "",
+                "| Candidate | CPU Steady RSS | CPU Peak RSS | CoreML Steady RSS | CoreML Peak RSS |",
+                "| --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in rows:
+            cpu_steady = (
+                mb_text_from_bytes(row["cpu_persistent_resident_after_warmup_bytes"])
+                if row["cpu_persistent_resident_after_warmup_bytes"] is not None
+                else "-"
+            )
+            cpu_peak = (
+                mb_text_from_bytes(row["cpu_persistent_peak_rss_bytes"])
+                if row["cpu_persistent_peak_rss_bytes"] is not None
+                else "-"
+            )
+            coreml_steady = (
+                mb_text_from_bytes(row["coreml_persistent_resident_after_warmup_bytes"])
+                if row["coreml_persistent_resident_after_warmup_bytes"] is not None
+                else "-"
+            )
+            coreml_peak = (
+                mb_text_from_bytes(row["coreml_persistent_peak_rss_bytes"])
+                if row["coreml_persistent_peak_rss_bytes"] is not None
+                else "-"
+            )
+            lines.append(
+                f"| `{row['candidate']}` | {cpu_steady} | {cpu_peak} | {coreml_steady} | {coreml_peak} |"
+            )
     lines.extend(
         [
             "",
@@ -392,6 +454,11 @@ def write_recommendation_markdown(
             f"its full-suite HF agreement is slightly higher "
             f"({percent_text(fidelity_row['full_hf_agreement'])}), but that edge is too small to justify "
             "preferring it over the accuracy-oriented quantized candidate for a repo-level experimental default."
+        ),
+        (
+            "- Memory does not improve the quantization case. In the persistent CPU benchmark the "
+            "steady RSS numbers are all close, and in the persistent CoreML benchmark float is "
+            "substantially leaner than either quantized finalist."
         ),
         (
             "- Persistent-session runtime does favor quantization, but only modestly. The recommended "

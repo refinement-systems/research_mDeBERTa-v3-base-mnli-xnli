@@ -11,7 +11,8 @@
 - Float remains the best default because it keeps 100.00% HF agreement on the full suite, has the strongest `xnli-zh` result (86.00%), and initializes fastest on both CPU and CoreML.
 - `attention_only` is the recommended experimental quantized path because it has the best full-suite accuracy among quantized models (86.67%) and the best net gain over float (+6 correct examples on the full suite).
 - `attention_proj_only` is still useful as the research fidelity baseline because its full-suite HF agreement is slightly higher (98.82%), but that edge is too small to justify preferring it over the accuracy-oriented quantized candidate for a repo-level experimental default.
-- Persistent-session runtime does favor quantization, but only modestly. The recommended experimental path saves about 10.18 ms on CPU warm median and about 12.89 ms on CoreML warm median.
+- Memory does not improve the quantization case. In the persistent CPU benchmark the steady RSS numbers are all close, and in the persistent CoreML benchmark float is substantially leaner than either quantized finalist.
+- Persistent-session runtime does favor quantization, but only modestly. The recommended experimental path saves about 16.57 ms on CPU warm median and about 7.41 ms on CoreML warm median.
 
 ## Caveat
 

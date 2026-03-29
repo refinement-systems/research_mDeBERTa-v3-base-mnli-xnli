@@ -1,5 +1,6 @@
 #include "command_line.h"
 #include "nli_inference.h"
+#include "process_memory.h"
 
 #include <algorithm>
 #include <chrono>
@@ -44,6 +45,7 @@ int main(int argc, char* argv[]) {
             std::cerr);
         const auto load_end = std::chrono::steady_clock::now();
         const double load_ms = std::chrono::duration<double, std::milli>(load_end - load_start).count();
+        const nli::ProcessMemorySnapshot memory_after_load = nli::GetProcessMemorySnapshot();
 
         if (options.dump_special_token_ids) {
             const auto special_token_ids = model.GetSpecialTokenIds();
@@ -67,6 +69,7 @@ int main(int argc, char* argv[]) {
         for (size_t warmup_index = 0; warmup_index < options.warmup_count; ++warmup_index) {
             (void)model.PredictLogits(options.premise, options.hypothesis);
         }
+        const nli::ProcessMemorySnapshot memory_after_warmup = nli::GetProcessMemorySnapshot();
 
         std::vector<double> timing_runs_ms;
         timing_runs_ms.reserve(options.repeat_count);
@@ -78,6 +81,7 @@ int main(int argc, char* argv[]) {
             timing_runs_ms.push_back(
                 std::chrono::duration<double, std::milli>(inference_end - inference_start).count());
         }
+        const nli::ProcessMemorySnapshot memory_after_timed_runs = nli::GetProcessMemorySnapshot();
 
         const nli::NliScores scores = nli::ScoresFromLogits(logits);
 
@@ -119,6 +123,18 @@ int main(int argc, char* argv[]) {
             std::cout << "timing_p95_ms: " << p95_ms << "\n";
             std::cout << "timing_min_ms: " << min_ms << "\n";
             std::cout << "timing_max_ms: " << max_ms << "\n";
+            if (memory_after_load.available) {
+                std::cout << "resident_after_load_bytes: " << memory_after_load.resident_bytes << "\n";
+                std::cout << "peak_rss_after_load_bytes: " << memory_after_load.peak_resident_bytes << "\n";
+            }
+            if (memory_after_warmup.available) {
+                std::cout << "resident_after_warmup_bytes: " << memory_after_warmup.resident_bytes << "\n";
+                std::cout << "peak_rss_after_warmup_bytes: " << memory_after_warmup.peak_resident_bytes << "\n";
+            }
+            if (memory_after_timed_runs.available) {
+                std::cout << "resident_after_timed_runs_bytes: " << memory_after_timed_runs.resident_bytes << "\n";
+                std::cout << "peak_rss_after_timed_runs_bytes: " << memory_after_timed_runs.peak_resident_bytes << "\n";
+            }
 
             if (options.dump_timing_runs) {
                 std::cout << "timing_runs_ms:";

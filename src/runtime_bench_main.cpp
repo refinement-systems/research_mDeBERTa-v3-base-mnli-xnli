@@ -1,6 +1,7 @@
 #include "command_line.h"
 #include "nli_eval.h"
 #include "nli_inference.h"
+#include "process_memory.h"
 
 #include <algorithm>
 #include <chrono>
@@ -65,6 +66,10 @@ void PrintSummaryLine(const std::string& key, double value) {
     std::cout << key << ": " << value << '\n';
 }
 
+void PrintSummaryLine(const std::string& key, uint64_t value) {
+    std::cout << key << ": " << value << '\n';
+}
+
 void PrintExampleTimingLine(const std::string& prefix, const ExampleTimingSummary& summary) {
     std::cout << prefix
               << ": benchmark=" << summary.benchmark
@@ -96,15 +101,22 @@ int main(int argc, char* argv[]) {
             std::cerr);
         const auto load_end = std::chrono::steady_clock::now();
         const double load_ms = std::chrono::duration<double, std::milli>(load_end - load_start).count();
+        const nli::ProcessMemorySnapshot memory_after_load = nli::GetProcessMemorySnapshot();
 
         std::vector<double> all_runs_ms;
         all_runs_ms.reserve(examples.size() * options.repeat_count);
         std::vector<ExampleTimingSummary> per_example_summaries;
         per_example_summaries.reserve(examples.size());
+        nli::ProcessMemorySnapshot memory_after_initial_warmup = memory_after_load;
+        bool captured_after_initial_warmup = false;
 
         for (const auto& example : examples) {
             for (size_t warmup_index = 0; warmup_index < options.warmup_count; ++warmup_index) {
                 (void)model.PredictLogits(example.premise, example.hypothesis);
+            }
+            if (!captured_after_initial_warmup) {
+                memory_after_initial_warmup = nli::GetProcessMemorySnapshot();
+                captured_after_initial_warmup = true;
             }
 
             std::vector<double> runs_ms;
@@ -125,6 +137,7 @@ int main(int argc, char* argv[]) {
                 example.id.empty() ? "<none>" : example.id,
                 runs_ms));
         }
+        const nli::ProcessMemorySnapshot memory_after_benchmark = nli::GetProcessMemorySnapshot();
 
         std::vector<double> sorted_all_runs = all_runs_ms;
         std::sort(sorted_all_runs.begin(), sorted_all_runs.end());
@@ -154,6 +167,30 @@ int main(int argc, char* argv[]) {
         PrintSummaryLine("timing_p95_ms", PercentileMillis(sorted_all_runs, 0.95));
         PrintSummaryLine("timing_min_ms", sorted_all_runs.front());
         PrintSummaryLine("timing_max_ms", sorted_all_runs.back());
+        if (memory_after_load.available) {
+            PrintSummaryLine(
+                "resident_after_load_bytes",
+                memory_after_load.resident_bytes);
+            PrintSummaryLine(
+                "peak_rss_after_load_bytes",
+                memory_after_load.peak_resident_bytes);
+        }
+        if (memory_after_initial_warmup.available) {
+            PrintSummaryLine(
+                "resident_after_warmup_bytes",
+                memory_after_initial_warmup.resident_bytes);
+            PrintSummaryLine(
+                "peak_rss_after_warmup_bytes",
+                memory_after_initial_warmup.peak_resident_bytes);
+        }
+        if (memory_after_benchmark.available) {
+            PrintSummaryLine(
+                "resident_after_timed_runs_bytes",
+                memory_after_benchmark.resident_bytes);
+            PrintSummaryLine(
+                "peak_rss_after_timed_runs_bytes",
+                memory_after_benchmark.peak_resident_bytes);
+        }
 
         std::map<std::string, std::vector<double>> runs_by_benchmark;
         for (const auto& summary : per_example_summaries) {
