@@ -1,7 +1,11 @@
 #include "command_line.h"
 #include "nli_inference.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <iostream>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -15,16 +19,32 @@ void PrintVector(const std::string& name, const std::vector<int64_t>& values) {
     std::cout << "\n";
 }
 
+double PercentileMillis(const std::vector<double>& sorted_millis, double percentile) {
+    if (sorted_millis.empty()) {
+        return 0.0;
+    }
+
+    const double clamped = std::clamp(percentile, 0.0, 1.0);
+    const size_t index = static_cast<size_t>(
+        std::ceil(clamped * static_cast<double>(sorted_millis.size())) - 1.0);
+    return sorted_millis[std::min(index, sorted_millis.size() - 1)];
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
     try {
         const nli::ExampleCommandLineOptions options = nli::ParseExampleCommandLine(argc, argv);
+
+        const auto load_start = std::chrono::steady_clock::now();
         nli::DebertaNliModel model(
             options.model_path,
             nli::DefaultSentencePieceModelPath(),
             options.backend,
             std::cerr);
+        const auto load_end = std::chrono::steady_clock::now();
+        const double load_ms = std::chrono::duration<double, std::milli>(load_end - load_start).count();
+
         if (options.dump_special_token_ids) {
             const auto special_token_ids = model.GetSpecialTokenIds();
             std::cout << "special_token_ids:"
@@ -43,7 +63,22 @@ int main(int argc, char* argv[]) {
             PrintVector("attention_mask", encoded.attention_mask);
             PrintVector("token_type_ids", encoded.token_type_ids);
         }
-        const nli::NliLogits logits = model.PredictLogits(options.premise, options.hypothesis);
+
+        for (size_t warmup_index = 0; warmup_index < options.warmup_count; ++warmup_index) {
+            (void)model.PredictLogits(options.premise, options.hypothesis);
+        }
+
+        std::vector<double> timing_runs_ms;
+        timing_runs_ms.reserve(options.repeat_count);
+        nli::NliLogits logits{};
+        for (size_t repeat_index = 0; repeat_index < options.repeat_count; ++repeat_index) {
+            const auto inference_start = std::chrono::steady_clock::now();
+            logits = model.PredictLogits(options.premise, options.hypothesis);
+            const auto inference_end = std::chrono::steady_clock::now();
+            timing_runs_ms.push_back(
+                std::chrono::duration<double, std::milli>(inference_end - inference_start).count());
+        }
+
         const nli::NliScores scores = nli::ScoresFromLogits(logits);
 
         if (options.dump_logits) {
@@ -55,10 +90,44 @@ int main(int argc, char* argv[]) {
             std::cout << "predicted_logit_label: " << nli::PredictedLabel(logits) << "\n";
         }
 
-        std::cout << "entailment: " << scores.entailment << "\n";
-        std::cout << "neutral: " << scores.neutral << "\n";
-        std::cout << "contradiction: " << scores.contradiction << "\n";
-        std::cout << "predicted_label: " << nli::PredictedLabel(scores) << "\n";
+        if (!options.quiet) {
+            std::cout << "entailment: " << scores.entailment << "\n";
+            std::cout << "neutral: " << scores.neutral << "\n";
+            std::cout << "contradiction: " << scores.contradiction << "\n";
+            std::cout << "predicted_label: " << nli::PredictedLabel(scores) << "\n";
+        }
+
+        if (options.timing) {
+            const double total_ms = std::accumulate(
+                timing_runs_ms.begin(),
+                timing_runs_ms.end(),
+                0.0);
+            std::vector<double> sorted_runs_ms = timing_runs_ms;
+            std::sort(sorted_runs_ms.begin(), sorted_runs_ms.end());
+            const double mean_ms = total_ms / static_cast<double>(timing_runs_ms.size());
+            const double median_ms = PercentileMillis(sorted_runs_ms, 0.5);
+            const double p95_ms = PercentileMillis(sorted_runs_ms, 0.95);
+            const double min_ms = sorted_runs_ms.front();
+            const double max_ms = sorted_runs_ms.back();
+
+            std::cout << "load_ms: " << load_ms << "\n";
+            std::cout << "warmup_runs: " << options.warmup_count << "\n";
+            std::cout << "timed_runs: " << options.repeat_count << "\n";
+            std::cout << "timing_total_ms: " << total_ms << "\n";
+            std::cout << "timing_mean_ms: " << mean_ms << "\n";
+            std::cout << "timing_median_ms: " << median_ms << "\n";
+            std::cout << "timing_p95_ms: " << p95_ms << "\n";
+            std::cout << "timing_min_ms: " << min_ms << "\n";
+            std::cout << "timing_max_ms: " << max_ms << "\n";
+
+            if (options.dump_timing_runs) {
+                std::cout << "timing_runs_ms:";
+                for (const double run_ms : timing_runs_ms) {
+                    std::cout << ' ' << run_ms;
+                }
+                std::cout << "\n";
+            }
+        }
 
         return 0;
     } catch (const Ort::Exception& e) {

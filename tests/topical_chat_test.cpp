@@ -181,6 +181,21 @@ void VerifyExampleOptionsAcceptExplicitModelPath() {
     if (options.dump_special_token_ids) {
         throw std::runtime_error("expected special token dump to default to false");
     }
+    if (options.repeat_count != 1) {
+        throw std::runtime_error("expected repeat count to default to 1");
+    }
+    if (options.warmup_count != 0) {
+        throw std::runtime_error("expected warmup count to default to 0");
+    }
+    if (options.timing) {
+        throw std::runtime_error("expected timing to default to false");
+    }
+    if (options.dump_timing_runs) {
+        throw std::runtime_error("expected raw timing dump to default to false");
+    }
+    if (options.quiet) {
+        throw std::runtime_error("expected quiet to default to false");
+    }
 }
 
 void VerifyExampleOptionsDefaultModelPath() {
@@ -251,6 +266,49 @@ void VerifyExampleOptionsAcceptSpecialTokenDumpFlag() {
     if (!options.dump_special_token_ids) {
         throw std::runtime_error("expected special token dump flag to be enabled");
     }
+}
+
+void VerifyExampleOptionsAcceptTimingFlags() {
+    auto parser = MakeExampleParser();
+    const std::vector<std::string> args = {
+        "--repeat=7",
+        "--warmup=2",
+        "--timing",
+        "--dump-timing-runs",
+        "--quiet",
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeExampleCommandLine(parser, values);
+
+    if (options.repeat_count != 7) {
+        throw std::runtime_error("expected repeat count to round-trip");
+    }
+    if (options.warmup_count != 2) {
+        throw std::runtime_error("expected warmup count to round-trip");
+    }
+    if (!options.timing) {
+        throw std::runtime_error("expected timing flag to be enabled");
+    }
+    if (!options.dump_timing_runs) {
+        throw std::runtime_error("expected raw timing dump flag to be enabled");
+    }
+    if (!options.quiet) {
+        throw std::runtime_error("expected quiet flag to be enabled");
+    }
+}
+
+void VerifyExampleOptionsRejectZeroRepeat() {
+    auto parser = MakeExampleParser();
+    const std::vector<std::string> args = {"--repeat=0"};
+    const optparse::Values& values = parser.parse_args(args);
+
+    try {
+        (void)nli::FinalizeExampleCommandLine(parser, values);
+    } catch (const std::invalid_argument&) {
+        return;
+    }
+
+    throw std::runtime_error("expected zero repeat count to be rejected");
 }
 
 void VerifyExampleOptionsRejectUnexpectedPositionalArgs() {
@@ -422,6 +480,8 @@ int main() {
     VerifyExampleOptionsAcceptCustomTextsAndEncodingFlag();
     VerifyExampleOptionsAcceptDumpLogitsFlag();
     VerifyExampleOptionsAcceptSpecialTokenDumpFlag();
+    VerifyExampleOptionsAcceptTimingFlags();
+    VerifyExampleOptionsRejectZeroRepeat();
     VerifyExampleOptionsRejectUnexpectedPositionalArgs();
     VerifyTokenizerNormalizationMatchesExpectedWhitespaceHandling();
     VerifyTokenizerAssetLoadingUsesConfiguredIds();

@@ -13,9 +13,14 @@ struct ExampleCommandLineOptions {
     std::string model_path;
     std::string premise;
     std::string hypothesis;
+    size_t repeat_count;
+    size_t warmup_count;
     bool dump_encoding;
     bool dump_logits;
     bool dump_special_token_ids;
+    bool timing;
+    bool dump_timing_runs;
+    bool quiet;
 };
 
 struct TopicalChatCommandLineOptions {

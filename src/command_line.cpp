@@ -81,6 +81,48 @@ void AddDumpSpecialTokenIdsOption(optparse::OptionParser& parser) {
         .help("print SentencePiece ids for the known special tokens");
 }
 
+void AddRepeatOption(optparse::OptionParser& parser) {
+    parser.add_option("--repeat")
+        .dest("repeat")
+        .metavar("N")
+        .type("int")
+        .set_default(1)
+        .help("number of timed inference runs to execute after warmup (default: %default)");
+}
+
+void AddWarmupOption(optparse::OptionParser& parser) {
+    parser.add_option("--warmup")
+        .dest("warmup")
+        .metavar("N")
+        .type("int")
+        .set_default(0)
+        .help("number of warmup inference runs before timing (default: %default)");
+}
+
+void AddTimingOption(optparse::OptionParser& parser) {
+    parser.add_option("--timing")
+        .dest("timing")
+        .action("store_true")
+        .set_default(false)
+        .help("print model load time and timed inference statistics");
+}
+
+void AddDumpTimingRunsOption(optparse::OptionParser& parser) {
+    parser.add_option("--dump-timing-runs")
+        .dest("dump_timing_runs")
+        .action("store_true")
+        .set_default(false)
+        .help("print individual timed inference durations in milliseconds");
+}
+
+void AddQuietOption(optparse::OptionParser& parser) {
+    parser.add_option("--quiet")
+        .dest("quiet")
+        .action("store_true")
+        .set_default(false)
+        .help("suppress score output; useful with --timing for benchmarks");
+}
+
 void AddCompareModelOption(optparse::OptionParser& parser) {
     parser.add_option("--compare-model")
         .dest("compare_model")
@@ -113,6 +155,14 @@ size_t ParseNonNegativeSize(const std::string& value, const std::string& option_
     return static_cast<size_t>(parsed);
 }
 
+size_t ParsePositiveSize(const std::string& value, const std::string& option_name) {
+    const size_t parsed = ParseNonNegativeSize(value, option_name);
+    if (parsed == 0) {
+        throw std::invalid_argument(option_name + " must be positive");
+    }
+    return parsed;
+}
+
 }  // namespace
 
 namespace nli {
@@ -124,9 +174,14 @@ void ConfigureExampleOptionParser(optparse::OptionParser& parser) {
     AddModelOption(parser);
     AddPremiseOption(parser);
     AddHypothesisOption(parser);
+    AddRepeatOption(parser);
+    AddWarmupOption(parser);
     AddDumpEncodingOption(parser);
     AddDumpLogitsOption(parser);
     AddDumpSpecialTokenIdsOption(parser);
+    AddTimingOption(parser);
+    AddDumpTimingRunsOption(parser);
+    AddQuietOption(parser);
 }
 
 optparse::OptionParser BuildExampleOptionParser() {
@@ -147,9 +202,14 @@ ExampleCommandLineOptions FinalizeExampleCommandLine(
         options["model"],
         options["premise"],
         options["hypothesis"],
+        ParsePositiveSize(options["repeat"], "--repeat"),
+        ParseNonNegativeSize(options["warmup"], "--warmup"),
         options.is_set_by_user("dump_encoding"),
         options.is_set_by_user("dump_logits"),
         options.is_set_by_user("dump_special_token_ids"),
+        options.is_set_by_user("timing"),
+        options.is_set_by_user("dump_timing_runs"),
+        options.is_set_by_user("quiet"),
     };
 }
 
