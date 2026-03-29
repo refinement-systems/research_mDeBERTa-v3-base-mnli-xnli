@@ -149,6 +149,7 @@ def build_candidate_specs(args: argparse.Namespace) -> list[CandidateSpec]:
                 "accuracy-control",
                 "--metric",
                 metric,
+                "--preprocess",
                 "--preset",
                 "mixed",
                 "--ignored-scope-family",

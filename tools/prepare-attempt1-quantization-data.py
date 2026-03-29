@@ -155,6 +155,16 @@ def run_disjointness_check(paths: list[pathlib.Path]) -> None:
     subprocess.run(command, check=True)
 
 
+def verify_generated_against_final_gates(
+    generated_paths: list[pathlib.Path],
+    final_gate_paths: list[pathlib.Path],
+) -> None:
+    run_disjointness_check(generated_paths)
+    for generated_path in generated_paths:
+        for final_gate_path in final_gate_paths:
+            run_disjointness_check([generated_path, final_gate_path])
+
+
 def main() -> int:
     args = parse_args()
     output_dir = pathlib.Path(args.output_dir)
@@ -201,7 +211,7 @@ def main() -> int:
             "Final eval gate files are missing: " + ", ".join(str(path) for path in missing_gates)
         )
 
-    run_disjointness_check(generated_paths + DEFAULT_FINAL_GATES)
+    verify_generated_against_final_gates(generated_paths, DEFAULT_FINAL_GATES)
 
     print("generated attempt1 data:")
     for path in generated_paths:

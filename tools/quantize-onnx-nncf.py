@@ -107,6 +107,16 @@ def parse_args() -> argparse.Namespace:
         help="Maximum absolute validation-metric drop for accuracy-control mode (default: 0.01).",
     )
     parser.add_argument(
+        "--preprocess",
+        action="store_true",
+        help="Run ORT quant_pre_process on the input model before NNCF quantization.",
+    )
+    parser.add_argument(
+        "--skip-preprocess-optimization",
+        action="store_true",
+        help="Disable graph optimization during quant_pre_process.",
+    )
+    parser.add_argument(
         "--disable-smooth-quant",
         action="store_true",
         help="Disable SmoothQuant inside NNCF advanced parameters.",
@@ -265,6 +275,7 @@ import nncf
 import numpy
 import onnx
 import onnxruntime
+from onnxruntime.quantization.shape_inference import quant_pre_process
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from nncf.quantization.advanced_parameters import AdvancedQuantizationParameters
 
@@ -328,8 +339,26 @@ tokenizer = AutoTokenizer.from_pretrained(
     local_files_only=pathlib.Path(payload["tokenizer_source"]).exists(),
     use_fast=True,
 )
-float_model = onnx.load(payload["input"], load_external_data=False)
-input_names = [value_info.name for value_info in float_model.graph.input]
+
+resolved_input_model = pathlib.Path(payload["input"])
+preprocess_dir = None
+if payload["preprocess"]:
+    import tempfile
+
+    preprocess_dir = tempfile.TemporaryDirectory(prefix="nli-nncf-preprocess-")
+    preprocessed_model = pathlib.Path(preprocess_dir.name) / "preprocessed.onnx"
+    quant_pre_process(
+        str(resolved_input_model),
+        str(preprocessed_model),
+        skip_optimization=payload["skip_preprocess_optimization"],
+        save_as_external_data=False,
+    )
+    resolved_input_model = preprocessed_model
+
+input_names = [
+    value_info.name
+    for value_info in onnx.load(resolved_input_model, load_external_data=False).graph.input
+]
 
 calibration_dataset = nncf.Dataset(
     calibration_examples,
@@ -414,16 +443,17 @@ def make_advanced_parameters(disable_smooth_quant):
 
 
 def run_quantization(disable_smooth_quant):
+    model = onnx.load(resolved_input_model, load_external_data=False)
     advanced_parameters = make_advanced_parameters(disable_smooth_quant)
     if payload["mode"] == "ptq":
         return nncf.quantize(
-            float_model,
+            model,
             calibration_dataset,
             advanced_parameters=advanced_parameters,
             **common_kwargs,
         )
     return nncf.quantize_with_accuracy_control(
-        float_model,
+        model,
         calibration_dataset,
         validation_dataset,
         validation_fn,
@@ -455,6 +485,8 @@ except Exception as exc:
     quantized_model = run_quantization(True)
 
 onnx.save_model(quantized_model, payload["output"])
+if preprocess_dir is not None:
+    preprocess_dir.cleanup()
 
 result = {
     "input": payload["input"],
@@ -467,6 +499,8 @@ result = {
     "ignored_nodes": payload["ignored_nodes"],
     "max_drop": payload["max_drop"],
     "fast_bias_correction": payload["fast_bias_correction"],
+    "preprocess": payload["preprocess"],
+    "skip_preprocess_optimization": payload["skip_preprocess_optimization"],
     "smooth_quant_disabled": smooth_quant_disabled,
     "retry_reason": retry_reason,
     "calibration_examples": len(calibration_examples),
@@ -487,6 +521,8 @@ print(json.dumps(result))
         "ignored_scope_family": args.ignored_scope_family,
         "ignored_nodes": ignored_nodes_for_family(input_model, args.ignored_scope_family),
         "max_drop": args.max_drop,
+        "preprocess": args.preprocess,
+        "skip_preprocess_optimization": args.skip_preprocess_optimization,
         "disable_smooth_quant": args.disable_smooth_quant,
         "fast_bias_correction": args.fast_bias_correction,
         "calibration_tsvs": [str(path) for path in calibration_paths],
@@ -514,6 +550,8 @@ print(json.dumps(result))
         f"ignored_scope_family={report['ignored_scope_family']} "
         f"ignored_nodes={report['ignored_nodes']} "
         f"max_drop={report['max_drop']} "
+        f"preprocess={report['preprocess']} "
+        f"skip_preprocess_optimization={report['skip_preprocess_optimization']} "
         f"fast_bias_correction={report['fast_bias_correction']} "
         f"smooth_quant_disabled={report['smooth_quant_disabled']}"
     )
