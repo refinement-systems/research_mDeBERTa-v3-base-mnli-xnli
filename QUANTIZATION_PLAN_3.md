@@ -28,7 +28,7 @@ Current high-level conclusion from `QUANTIZATION_REPORT_6.md`:
 
 - the quantized finalists are real and benchmarked
 - they do improve some gold-label outcomes over float
-- but they do not currently buy a meaningful CPU runtime advantage
+- but they do not currently buy a meaningful CPU or CoreML runtime advantage
 - so float is still the most defensible default overall
 
 That changes the next-step objective.
@@ -91,21 +91,19 @@ Risk:
 
 ### 3.2. Full CoreML Runtime Benchmark
 
-After the persistent-session path exists, run the same benchmark tiers on CoreML:
+The full core-probe CoreML benchmark now exists and should be treated as baseline evidence, not as a future todo.
 
-- core probe
-- optionally hard probe
+What remains is to improve the quality of that measurement path:
 
-Candidates:
-
-- float
-- `attention_only`
-- `attention_proj_only`
+- rerun CoreML under a persistent-session benchmark
+- decide whether hard-probe CoreML is worth the extra runtime cost
+- compare persistent-session CoreML against the current cold-start-heavy CLI benchmark
 
 Why:
 
 - CPU no longer provides a strong argument for quantization
-- CoreML is now the only obvious place where a meaningful runtime win might still exist
+- the current CoreML result also does not show a meaningful win
+- so any further CoreML investigation should focus on whether the measurement path itself is masking a real steady-state advantage
 
 Expected value:
 
@@ -248,6 +246,7 @@ A future quantized candidate should only be considered better if it satisfies at
 - higher full-suite accuracy than `attention_only`
 - better HF agreement than `attention_proj_only`
 - meaningfully better runtime than float in the shipped path
+- meaningfully better runtime than float in either CPU or CoreML steady-state serving
 - meaningfully smaller size with no meaningful runtime or quality regression
 
 And it must also satisfy all of these:
@@ -260,7 +259,7 @@ And it must also satisfy all of these:
 ## 7. Recommended Execution Order
 
 1. add a persistent-session runtime benchmark path
-2. benchmark float vs `attention_only` vs `attention_proj_only` on CoreML using that path
+2. rerun float vs `attention_only` vs `attention_proj_only` on CoreML using that path
 3. add a combined benchmark dashboard
 4. write an explicit default-model recommendation
 5. only then decide whether further quantization search is justified

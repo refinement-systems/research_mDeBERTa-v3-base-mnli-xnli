@@ -10,7 +10,7 @@ Scope: combined quality and runtime benchmark results after `QUANTIZATION_REPORT
 - `benchmarks/nli/hf-probe-benchmark.csv`
 - `benchmarks/nli/hf-core-probe-benchmark.csv`
 - `benchmarks/nli/runtime-cpu-core-probe.csv`
-- `benchmarks/nli/runtime-cpu-coreml-1example.csv`
+- `benchmarks/nli/runtime-coreml-core-probe.csv`
 
 This report covers:
 
@@ -88,7 +88,7 @@ Current runtime benchmark tool:
 Current completed runtime outputs:
 
 - `benchmarks/nli/runtime-cpu-core-probe.csv`
-- `benchmarks/nli/runtime-cpu-coreml-1example.csv`
+- `benchmarks/nli/runtime-coreml-core-probe.csv`
 
 Important note:
 
@@ -169,23 +169,22 @@ Reading:
 
 That means the current quantized finalists do **not** buy a meaningful CPU runtime advantage.
 
-### 4.2. CPU/CoreML One-Example Snapshot
+### 4.2. CoreML Runtime On The Full Core Probe
 
-From `benchmarks/nli/runtime-cpu-coreml-1example.csv`:
+From `benchmarks/nli/runtime-coreml-core-probe.csv`:
 
-| Candidate | Backend | Load Median | Warm Median |
-| --- | --- | ---: | ---: |
-| `attention_proj_only` | `coreml` | `16172.700 ms` | `473.462 ms` |
-| `float` | `coreml` | `15744.900 ms` | `486.186 ms` |
-| `attention_only` | `coreml` | `15360.500 ms` | `486.332 ms` |
-| `attention_only` | `cpu` | `4802.510 ms` | `471.466 ms` |
-| `attention_proj_only` | `cpu` | `5024.040 ms` | `471.467 ms` |
-| `float` | `cpu` | `4618.750 ms` | `476.820 ms` |
+| Candidate | Size | Load Median | Warm Median | Warm P95 |
+| --- | ---: | ---: | ---: | ---: |
+| `attention_proj_only` | `1056.31 MB` | `17293.000 ms` | `489.929 ms` | `770.095 ms` |
+| `float` | `1064.41 MB` | `16611.600 ms` | `492.284 ms` | `760.965 ms` |
+| `attention_only` | `1036.07 MB` | `17387.700 ms` | `494.356 ms` | `759.103 ms` |
 
-This is only a one-example snapshot, so it is not strong enough to rank the candidates on CoreML. But it does reinforce two points:
+Reading:
 
-- CoreML cold load is much slower than CPU cold load in the current path
-- warm latency still does not show a decisive quantized advantage
+- warm latency is effectively the same across all three models on CoreML as well
+- float is still the fastest to cold-load
+- the small warm-latency edge for `attention_proj_only` is only a few milliseconds and is not operationally decisive
+- quantization still does not buy a meaningful runtime advantage in the current CoreML path either
 
 ## 5. Combined Interpretation
 
@@ -200,7 +199,7 @@ Strength:
 Weakness:
 
 - slightly worse fidelity than `attention_proj_only`
-- no meaningful CPU runtime advantage over float
+- no meaningful CPU or CoreML runtime advantage over float
 - Chinese still regresses
 
 ### 5.2. `attention_proj_only`
@@ -213,7 +212,7 @@ Weakness:
 
 - slightly worse accuracy than `attention_only`
 - still not faithful enough to match float/HF
-- no meaningful CPU runtime advantage over float
+- no meaningful CPU or CoreML runtime advantage over float
 - Chinese still regresses
 
 ### 5.3. `float`
@@ -221,7 +220,7 @@ Weakness:
 Strength:
 
 - exact HF-label match on the full suite
-- fastest CPU cold load of the three
+- fastest cold load on both CPU and CoreML
 - only marginally slower warm latency than the quantized finalists
 
 Weakness:
@@ -244,7 +243,7 @@ But if the decision is "best default model for this repo today", the evidence no
 Why:
 
 - it is the faithful ONNX representation of the HF reference
-- the CPU runtime cost relative to the quantized finalists is negligible in practice
+- the CPU and CoreML runtime cost relative to the quantized finalists is negligible in practice
 - the quantized finalists do not currently deliver enough speed benefit to justify their drift
 
 ## 7. What Changed Relative To Report 5
@@ -253,7 +252,7 @@ Why:
 
 This report adds the missing operational point:
 
-- the current quantized finalists are not obviously faster in the shipped CPU path
+- the current quantized finalists are not obviously faster in the shipped CPU or CoreML paths
 
 That materially changes the decision context.
 
@@ -317,13 +316,12 @@ python3 tools/benchmark-nli-runtime.py \
 
 ```bash
 python3 tools/benchmark-nli-runtime.py \
-  --max-examples 1 \
-  --repeat 2 \
+  --max-examples 0 \
+  --repeat 3 \
   --warmup 1 \
-  --backend cpu \
   --backend coreml \
-  --summary-json benchmarks/nli/runtime-cpu-coreml-1example.json \
-  --summary-csv benchmarks/nli/runtime-cpu-coreml-1example.csv
+  --summary-json benchmarks/nli/runtime-coreml-core-probe.json \
+  --summary-csv benchmarks/nli/runtime-coreml-core-probe.csv
 ```
 
 ## 9. Bottom Line
@@ -333,5 +331,5 @@ The repo now has enough evidence to say all of the following with confidence:
 - the quality frontier is stable
 - `attention_only` is the best quantized model on accuracy
 - `attention_proj_only` is the best quantized model on fidelity
-- neither quantized finalist currently delivers a meaningful CPU runtime advantage
+- neither quantized finalist currently delivers a meaningful CPU or CoreML runtime advantage
 - float remains the most defensible default overall
