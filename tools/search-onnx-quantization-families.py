@@ -78,6 +78,30 @@ STATIC_CANDIDATE_DESCRIPTIONS = [
         "ffn_only",
         "Quantize FFN and output dense matmuls only; leave attention-side weight matmuls float",
     ),
+    (
+        "attention_proj_only",
+        "Quantize only attention projection matmuls; leave attention output and all FFN dense matmuls float",
+    ),
+    (
+        "attention_only_layer_11_float",
+        "Attention-only baseline, but keep all quantizable attention matmuls in layer 11 float",
+    ),
+    (
+        "attention_only_layers_10_11_float",
+        "Attention-only baseline, but keep all quantizable attention matmuls in layers 10-11 float",
+    ),
+    (
+        "attention_only_attention_output_layers_8_11_float",
+        "Attention-only baseline, but keep upper-layer attention output dense matmuls float",
+    ),
+    (
+        "attention_proj_only_layer_11_float",
+        "Projection-only attention quantization, with layer 11 attention projections also left float",
+    ),
+    (
+        "attention_proj_only_layers_10_11_float",
+        "Projection-only attention quantization, with layers 10-11 attention projections also left float",
+    ),
 ]
 
 
@@ -270,6 +294,13 @@ def layer_subset(names: list[str], start: int, end: int) -> list[str]:
     return sorted(selected)
 
 
+def merge_nodes(*node_lists: list[str]) -> list[str]:
+    merged = set()
+    for node_list in node_lists:
+        merged.update(node_list)
+    return sorted(merged)
+
+
 def make_candidate_specs(
     output_dir: pathlib.Path,
     families: dict[str, object],
@@ -340,6 +371,68 @@ def make_candidate_specs(
             description="Quantize FFN and output dense matmuls only; leave attention-side weight matmuls float",
             output_path=output_dir / "dynamic_qint8_matmul_ffn_only.onnx",
             nodes_to_exclude=families["attention_all"],
+        ),
+        CandidateSpec(
+            name="attention_proj_only",
+            description="Quantize only attention projection matmuls; leave attention output and all FFN dense matmuls float",
+            output_path=output_dir / "dynamic_qint8_matmul_attention_proj_only.onnx",
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                families["attention_output"],
+            ),
+        ),
+        CandidateSpec(
+            name="attention_only_layer_11_float",
+            description="Attention-only baseline, but keep all quantizable attention matmuls in layer 11 float",
+            output_path=output_dir / "dynamic_qint8_matmul_attention_only_layer_11_float.onnx",
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                layer_subset(families["attention_all"], 11, 11),
+            ),
+        ),
+        CandidateSpec(
+            name="attention_only_layers_10_11_float",
+            description="Attention-only baseline, but keep all quantizable attention matmuls in layers 10-11 float",
+            output_path=output_dir / "dynamic_qint8_matmul_attention_only_layers_10_11_float.onnx",
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                layer_subset(families["attention_all"], 10, 11),
+            ),
+        ),
+        CandidateSpec(
+            name="attention_only_attention_output_layers_8_11_float",
+            description="Attention-only baseline, but keep upper-layer attention output dense matmuls float",
+            output_path=output_dir / (
+                "dynamic_qint8_matmul_attention_only_attention_output_layers_8_11_float.onnx"
+            ),
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                layer_subset(families["attention_output"], 8, 11),
+            ),
+        ),
+        CandidateSpec(
+            name="attention_proj_only_layer_11_float",
+            description="Projection-only attention quantization, with layer 11 attention projections also left float",
+            output_path=output_dir / (
+                "dynamic_qint8_matmul_attention_proj_only_layer_11_float.onnx"
+            ),
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                families["attention_output"],
+                layer_subset(families["attention_proj"], 11, 11),
+            ),
+        ),
+        CandidateSpec(
+            name="attention_proj_only_layers_10_11_float",
+            description="Projection-only attention quantization, with layers 10-11 attention projections also left float",
+            output_path=output_dir / (
+                "dynamic_qint8_matmul_attention_proj_only_layers_10_11_float.onnx"
+            ),
+            nodes_to_exclude=merge_nodes(
+                families["ffn_all"],
+                families["attention_output"],
+                layer_subset(families["attention_proj"], 10, 11),
+            ),
         ),
     ]
 
