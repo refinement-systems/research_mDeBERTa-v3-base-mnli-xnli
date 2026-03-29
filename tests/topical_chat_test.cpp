@@ -62,6 +62,13 @@ optparse::OptionParserExcept MakeEvalParser() {
     return parser;
 }
 
+optparse::OptionParserExcept MakeRuntimeBenchParser() {
+    optparse::OptionParserExcept parser;
+    nli::ConfigureRuntimeBenchOptionParser(parser);
+    parser.prog("nli-runtime-bench");
+    return parser;
+}
+
 void VerifyTopicalChatParsingPreservesOrder() {
     const auto turns = nli::ReadTopicalChatTurnInputs(FixturePath());
     const std::vector<std::pair<std::string, std::string>> expected = {
@@ -391,6 +398,9 @@ void VerifyEvalFixtureParsingPreservesRows() {
         throw std::runtime_error("unexpected number of eval examples");
     }
 
+    if (examples[0].benchmark != "nli_eval_fixture.tsv") {
+        throw std::runtime_error("expected eval benchmark to default to input filename");
+    }
     if (examples[0].id != "row-1") {
         throw std::runtime_error("expected eval id to round-trip");
     }
@@ -466,6 +476,51 @@ void VerifyEvalOptionsRejectMissingInput() {
         2);
 }
 
+void VerifyRuntimeBenchOptionsAcceptFlags() {
+    auto parser = MakeRuntimeBenchParser();
+    const std::vector<std::string> args = {
+        "--backend=cpu",
+        "--model=/tmp/runtime.onnx",
+        "--repeat=9",
+        "--warmup=2",
+        "--dump-example-timings",
+        EvalFixturePath(),
+    };
+    const optparse::Values& values = parser.parse_args(args);
+    const auto options = nli::FinalizeRuntimeBenchCommandLine(parser, values);
+
+    if (options.backend != nli::SessionBackend::kCPU) {
+        throw std::runtime_error("expected runtime bench backend to parse");
+    }
+    if (options.model_path != "/tmp/runtime.onnx") {
+        throw std::runtime_error("expected runtime bench model path to round-trip");
+    }
+    if (options.repeat_count != 9) {
+        throw std::runtime_error("expected runtime bench repeat count to round-trip");
+    }
+    if (options.warmup_count != 2) {
+        throw std::runtime_error("expected runtime bench warmup count to round-trip");
+    }
+    if (!options.dump_example_timings) {
+        throw std::runtime_error("expected runtime bench example timing flag to round-trip");
+    }
+    if (options.input_path != EvalFixturePath()) {
+        throw std::runtime_error("expected runtime bench input path to round-trip");
+    }
+}
+
+void VerifyRuntimeBenchOptionsRejectMissingInput() {
+    auto parser = MakeRuntimeBenchParser();
+    const std::vector<std::string> args = {"--repeat=2"};
+    const optparse::Values& values = parser.parse_args(args);
+
+    ExpectParserExitCode(
+        [&]() {
+            (void)nli::FinalizeRuntimeBenchCommandLine(parser, values);
+        },
+        2);
+}
+
 }  // namespace
 
 int main() {
@@ -490,5 +545,7 @@ int main() {
     VerifyEvalOptionsAcceptComparisonModel();
     VerifyEvalOptionsUseDefaults();
     VerifyEvalOptionsRejectMissingInput();
+    VerifyRuntimeBenchOptionsAcceptFlags();
+    VerifyRuntimeBenchOptionsRejectMissingInput();
     return 0;
 }

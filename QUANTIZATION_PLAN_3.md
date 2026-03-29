@@ -28,24 +28,24 @@ Current high-level conclusion from `QUANTIZATION_REPORT_6.md`:
 
 - the quantized finalists are real and benchmarked
 - they do improve some gold-label outcomes over float
-- but they do not currently buy a meaningful CPU or CoreML runtime advantage
-- so float is still the most defensible default overall
+- they now show a small steady-state warm-latency advantage in persistent-session CPU and CoreML benchmarks
+- float still loads fastest and remains the most defensible default overall
 
 That changes the next-step objective.
 
-The next work should not be "find any better quantized model."
+The next work should not be "find any better quantized model" by default.
 
 The next work should be:
 
-- finish the operational evidence,
-- decide whether quantization is still worth pursuing as a shipping path,
+- consolidate the operational evidence,
+- decide whether that modest warm-latency edge is worth shipping as a separate path,
 - only continue candidate search if the target is still realistic.
 
 ## 2. Primary Goal
 
 The next round should answer this decision cleanly:
 
-- can a quantized model beat float on something that matters operationally, not just on a few benchmark points?
+- is the modest persistent-session latency edge large enough to justify shipping a quantized option, despite lower fidelity?
 
 That means future work must be judged on:
 
@@ -58,62 +58,7 @@ If a candidate cannot improve at least one of those materially without unaccepta
 
 ## 3. What To Build Next
 
-### 3.1. Persistent-Session Runtime Benchmark
-
-This is now the highest-priority task.
-
-The current runtime benchmark is useful, but it still launches `builddir/nli` once per example.
-
-That is enough to measure cold load and warm latency separately, but it makes large CoreML sweeps slow and operationally noisy.
-
-Add a benchmark path that:
-
-- loads a model once
-- runs many examples through the same process
-- reports:
-  - cold load time
-  - per-example warm latency
-  - aggregate warm median and p95
-  - optionally memory usage if practical
-
-Why:
-
-- it will make full CoreML runtime benchmarking feasible
-- it will better model the common case where a loaded model serves multiple requests
-
-Expected value:
-
-- high
-
-Risk:
-
-- medium
-
-### 3.2. Full CoreML Runtime Benchmark
-
-The full core-probe CoreML benchmark now exists and should be treated as baseline evidence, not as a future todo.
-
-What remains is to improve the quality of that measurement path:
-
-- rerun CoreML under a persistent-session benchmark
-- decide whether hard-probe CoreML is worth the extra runtime cost
-- compare persistent-session CoreML against the current cold-start-heavy CLI benchmark
-
-Why:
-
-- CPU no longer provides a strong argument for quantization
-- the current CoreML result also does not show a meaningful win
-- so any further CoreML investigation should focus on whether the measurement path itself is masking a real steady-state advantage
-
-Expected value:
-
-- high
-
-Risk:
-
-- low to medium
-
-### 3.3. Combined Benchmark Dashboard
+### 3.1. Combined Benchmark Dashboard
 
 Add one compact output that merges:
 
@@ -123,8 +68,10 @@ Add one compact output that merges:
 - HF agreement
 - `xnli-zh` guardrail
 - file size
-- CPU runtime
-- CoreML runtime
+- CPU cold-start runtime
+- CoreML cold-start runtime
+- CPU persistent runtime
+- CoreML persistent runtime
 
 Possible formats:
 
@@ -144,17 +91,18 @@ Risk:
 
 - low
 
-### 3.4. Shipping Recommendation Check
+### 3.2. Shipping Recommendation Check
 
-Once the full runtime picture is complete, write down one explicit recommendation:
+The runtime picture is now complete enough to write down one explicit recommendation:
 
 - default model
 - optional experimental model
 - rationale
+- serving-mode caveat
 
 Why:
 
-- the repo is close to a decision point, not just an experimentation point
+- the repo is already at a decision point, not just an experimentation point
 
 Expected value:
 
@@ -164,11 +112,33 @@ Risk:
 
 - low
 
+### 3.3. Optional Memory-Oriented Benchmarking
+
+If the repo still cares about quantization as a shipping path, the next operational measurement to add is memory behavior:
+
+- peak RSS during model load
+- steady-state RSS after warmup
+- if practical, backend-specific memory summaries
+
+Why:
+
+- the current size savings are modest
+- the current latency savings are modest
+- memory is the remaining operational dimension that could still justify quantization
+
+Expected value:
+
+- medium
+
+Risk:
+
+- medium
+
 ## 4. What To Try Only If Quantization Still Looks Worthwhile
 
 After the runtime picture is complete, only continue quantization search if at least one of these remains plausible:
 
-- meaningful CoreML warm-latency win
+- meaningful steady-state warm-latency win beyond the current `2-3%`
 - meaningful memory win
 - meaningful size reduction that matters operationally
 
@@ -232,12 +202,13 @@ Reason:
 - the repo now has enough evidence to make a serious default-model decision
 - continuing experiments without that decision would blur research and product choices
 
-### 5.4. Do Not Overread The Current CoreML Snapshot
+### 5.4. Do Not Overread Small Persistent-Latency Deltas
 
 Reason:
 
-- the current CoreML runtime result is only a one-example snapshot
-- it is useful, but it is not enough to decide the CoreML story yet
+- the repo now has full cold-start and persistent CPU/CoreML benchmarks
+- but the observed warm-latency edge is still small
+- shipping decisions should treat that edge as real but modest, not transformative
 
 ## 6. Acceptance Criteria For Future Quantized Candidates
 
@@ -258,11 +229,10 @@ And it must also satisfy all of these:
 
 ## 7. Recommended Execution Order
 
-1. add a persistent-session runtime benchmark path
-2. rerun float vs `attention_only` vs `attention_proj_only` on CoreML using that path
-3. add a combined benchmark dashboard
-4. write an explicit default-model recommendation
-5. only then decide whether further quantization search is justified
+1. add a combined benchmark dashboard
+2. write an explicit default-model recommendation
+3. decide whether optional memory benchmarking is worth the effort
+4. only then decide whether further quantization search is justified
 
 ## 8. Bottom Line
 
@@ -272,6 +242,7 @@ The repo now knows:
 
 - what the best quantized candidates are
 - what their quality tradeoffs are
-- that CPU runtime does not currently justify preferring them over float
+- that persistent-session runtime gives them only a modest edge
+- that float is still the simplest and most defensible default
 
 So the next phase should be operational confirmation and product decision-making, not more wide quantization research by default.

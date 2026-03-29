@@ -140,6 +140,14 @@ void AddMaxDisagreementsOption(optparse::OptionParser& parser) {
         .help("maximum number of prediction disagreements to print (default: %default)");
 }
 
+void AddDumpExampleTimingsOption(optparse::OptionParser& parser) {
+    parser.add_option("--dump-example-timings")
+        .dest("dump_example_timings")
+        .action("store_true")
+        .set_default(false)
+        .help("print per-example timing summaries after the aggregate benchmark output");
+}
+
 size_t ParseNonNegativeSize(const std::string& value, const std::string& option_name) {
     long parsed = 0;
     try {
@@ -289,6 +297,47 @@ EvalCommandLineOptions ParseEvalCommandLine(int argc, char* argv[]) {
     auto parser = BuildEvalOptionParser();
     const optparse::Values& options = parser.parse_args(argc, argv);
     return FinalizeEvalCommandLine(parser, options);
+}
+
+void ConfigureRuntimeBenchOptionParser(optparse::OptionParser& parser) {
+    parser.usage("%prog [options] INPUT_TSV");
+    parser.description(
+        "Run persistent-session runtime benchmarking over a TSV file containing premise and "
+        "hypothesis columns.");
+    AddBackendOption(parser);
+    AddModelOption(parser);
+    AddRepeatOption(parser);
+    AddWarmupOption(parser);
+    AddDumpExampleTimingsOption(parser);
+}
+
+optparse::OptionParser BuildRuntimeBenchOptionParser() {
+    optparse::OptionParser parser;
+    ConfigureRuntimeBenchOptionParser(parser);
+    return parser;
+}
+
+RuntimeBenchCommandLineOptions FinalizeRuntimeBenchCommandLine(
+    const optparse::OptionParser& parser,
+    const optparse::Values& options) {
+    if (parser.args().size() != 1) {
+        parser.error("expected exactly one TSV input file argument");
+    }
+
+    return RuntimeBenchCommandLineOptions{
+        ParseSessionBackendOption(options["backend"]),
+        options["model"],
+        ParsePositiveSize(options["repeat"], "--repeat"),
+        ParseNonNegativeSize(options["warmup"], "--warmup"),
+        options.is_set_by_user("dump_example_timings"),
+        parser.args().front(),
+    };
+}
+
+RuntimeBenchCommandLineOptions ParseRuntimeBenchCommandLine(int argc, char* argv[]) {
+    auto parser = BuildRuntimeBenchOptionParser();
+    const optparse::Values& options = parser.parse_args(argc, argv);
+    return FinalizeRuntimeBenchCommandLine(parser, options);
 }
 
 }  // namespace nli

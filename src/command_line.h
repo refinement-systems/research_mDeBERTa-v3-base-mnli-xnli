@@ -37,6 +37,15 @@ struct EvalCommandLineOptions {
     std::string input_path;
 };
 
+struct RuntimeBenchCommandLineOptions {
+    SessionBackend backend;
+    std::string model_path;
+    size_t repeat_count;
+    size_t warmup_count;
+    bool dump_example_timings;
+    std::string input_path;
+};
+
 void ConfigureExampleOptionParser(optparse::OptionParser& parser);
 optparse::OptionParser BuildExampleOptionParser();
 ExampleCommandLineOptions FinalizeExampleCommandLine(
@@ -57,5 +66,12 @@ EvalCommandLineOptions FinalizeEvalCommandLine(
     const optparse::OptionParser& parser,
     const optparse::Values& options);
 EvalCommandLineOptions ParseEvalCommandLine(int argc, char* argv[]);
+
+void ConfigureRuntimeBenchOptionParser(optparse::OptionParser& parser);
+optparse::OptionParser BuildRuntimeBenchOptionParser();
+RuntimeBenchCommandLineOptions FinalizeRuntimeBenchCommandLine(
+    const optparse::OptionParser& parser,
+    const optparse::Values& options);
+RuntimeBenchCommandLineOptions ParseRuntimeBenchCommandLine(int argc, char* argv[]);
 
 }  // namespace nli

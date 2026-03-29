@@ -3,6 +3,7 @@
 #include "nli_inference.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <stdexcept>
@@ -92,6 +93,8 @@ std::vector<NliEvalExample> ReadNliEvalExamples(const std::string& path) {
         label_index = FindColumnIndex(header_map, "gold_label");
     }
     const auto id_index = FindColumnIndex(header_map, "id");
+    const auto benchmark_index = FindColumnIndex(header_map, "benchmark");
+    const std::string default_benchmark = std::filesystem::path(path).filename().string();
 
     std::vector<NliEvalExample> examples;
     std::string line;
@@ -113,6 +116,7 @@ std::vector<NliEvalExample> ReadNliEvalExamples(const std::string& path) {
         }
 
         NliEvalExample example;
+        example.benchmark = benchmark_index ? fields[*benchmark_index] : default_benchmark;
         if (id_index) {
             example.id = fields[*id_index];
         }

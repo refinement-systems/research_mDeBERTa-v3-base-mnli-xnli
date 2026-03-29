@@ -4,18 +4,19 @@ import argparse
 import csv
 import json
 import math
-import os
 import pathlib
 import platform
 import random
 import statistics
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_EXECUTABLE = REPO_ROOT / "builddir/nli"
+DEFAULT_PERSISTENT_EXECUTABLE = REPO_ROOT / "builddir/nli-runtime-bench"
 DEFAULT_TSVS = [REPO_ROOT / "benchmarks/nli/hf-core-probe.tsv"]
 DEFAULT_MODELS = [
     (
@@ -52,6 +53,17 @@ def parse_args() -> argparse.Namespace:
         "--executable",
         default=str(DEFAULT_EXECUTABLE),
         help=f"Path to nli executable (default: {DEFAULT_EXECUTABLE})",
+    )
+    parser.add_argument(
+        "--persistent-executable",
+        default=str(DEFAULT_PERSISTENT_EXECUTABLE),
+        help=f"Path to persistent runtime benchmark executable (default: {DEFAULT_PERSISTENT_EXECUTABLE})",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["coldstart", "persistent"],
+        default="coldstart",
+        help="Runtime benchmark mode (default: coldstart)",
     )
     parser.add_argument(
         "--tsv",
@@ -186,6 +198,23 @@ def parse_key_value_output(stdout: str) -> dict[str, str]:
     return parsed
 
 
+def parse_structured_line(stdout: str, prefix: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in stdout.splitlines():
+        marker = f"{prefix}: "
+        if not line.startswith(marker):
+            continue
+        payload = line[len(marker):]
+        row: dict[str, str] = {}
+        for field in payload.split("\t"):
+            if "=" not in field:
+                continue
+            key, value = field.split("=", 1)
+            row[key] = value
+        rows.append(row)
+    return rows
+
+
 def parse_float(value: str) -> float:
     return float(value)
 
@@ -214,7 +243,7 @@ def summarize_numeric(values: list[float]) -> dict[str, float | None]:
     }
 
 
-def benchmark_model_backend(
+def benchmark_model_backend_coldstart(
     executable: pathlib.Path,
     model_path: pathlib.Path,
     backend: str,
@@ -302,9 +331,127 @@ def benchmark_model_backend(
     }
 
 
+def write_temp_examples_tsv(examples: list[Example]) -> pathlib.Path:
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        newline="",
+        encoding="utf-8",
+        prefix="nli-runtime-bench-",
+        suffix=".tsv",
+        dir="/tmp",
+        delete=False,
+    )
+    path = pathlib.Path(handle.name)
+    with handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["benchmark", "id", "premise", "hypothesis"],
+            delimiter="\t",
+        )
+        writer.writeheader()
+        for example in examples:
+            writer.writerow(
+                {
+                    "benchmark": example.benchmark,
+                    "id": example.example_id,
+                    "premise": example.premise,
+                    "hypothesis": example.hypothesis,
+                }
+            )
+    return path
+
+
+def benchmark_model_backend_persistent(
+    executable: pathlib.Path,
+    model_path: pathlib.Path,
+    backend: str,
+    repeat: int,
+    warmup: int,
+    examples: list[Example],
+) -> dict[str, object]:
+    temp_tsv = write_temp_examples_tsv(examples)
+    try:
+        command = [
+            str(executable),
+            "-b",
+            backend,
+            "--model",
+            str(model_path),
+            "--repeat",
+            str(repeat),
+            "--warmup",
+            str(warmup),
+            "--dump-example-timings",
+            str(temp_tsv),
+        ]
+        completed = subprocess.run(
+            command,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "Persistent runtime benchmark command failed:\n"
+                f"command={' '.join(command)}\n"
+                f"stdout={completed.stdout}\n"
+                f"stderr={completed.stderr}"
+            )
+
+        parsed = parse_key_value_output(completed.stdout)
+        benchmark_rows = parse_structured_line(completed.stdout, "benchmark_timing")
+        example_rows = parse_structured_line(completed.stdout, "example_timing")
+
+        per_benchmark = {}
+        for row in benchmark_rows:
+            benchmark_name = row["benchmark"]
+            per_benchmark[benchmark_name] = {
+                "examples": sum(1 for example in examples if example.benchmark == benchmark_name),
+                "warm_latency_ms": {
+                    "mean": parse_float(row["mean_ms"]),
+                    "median": parse_float(row["median_ms"]),
+                    "p95": parse_float(row["p95_ms"]),
+                    "min": parse_float(row["min_ms"]),
+                    "max": parse_float(row["max_ms"]),
+                },
+            }
+
+        per_example = [
+            {
+                "benchmark": row["benchmark"],
+                "id": row["id"],
+                "timing_mean_ms": parse_float(row["mean_ms"]),
+                "timing_median_ms": parse_float(row["median_ms"]),
+                "timing_p95_ms": parse_float(row["p95_ms"]),
+                "timing_min_ms": parse_float(row["min_ms"]),
+                "timing_max_ms": parse_float(row["max_ms"]),
+            }
+            for row in example_rows
+        ]
+
+        load_ms = parse_float(parsed["load_ms"])
+        return {
+            "examples": len(examples),
+            "file_size_bytes": model_path.stat().st_size,
+            "load_ms": summarize_numeric([load_ms]),
+            "warm_latency_ms": {
+                "mean": parse_float(parsed["timing_mean_ms"]),
+                "median": parse_float(parsed["timing_median_ms"]),
+                "p95": parse_float(parsed["timing_p95_ms"]),
+                "min": parse_float(parsed["timing_min_ms"]),
+                "max": parse_float(parsed["timing_max_ms"]),
+            },
+            "per_benchmark": per_benchmark,
+            "per_example": per_example,
+        }
+    finally:
+        temp_tsv.unlink(missing_ok=True)
+
+
 def print_summary(rows: list[dict[str, object]]) -> None:
     header = (
-        f"{'candidate':<22} {'backend':<8} {'size_mb':>8} "
+        f"{'candidate':<22} {'backend':<8} {'mode':<11} {'size_mb':>8} "
         f"{'load_med':>10} {'warm_med':>10} {'warm_p95':>10}"
     )
     print(header)
@@ -313,6 +460,7 @@ def print_summary(rows: list[dict[str, object]]) -> None:
         print(
             f"{row['candidate']:<22} "
             f"{row['backend']:<8} "
+            f"{row['mode']:<11} "
             f"{row['file_size_bytes'] / (1024.0 * 1024.0):>7.2f} "
             f"{row['load_ms']['median']:>10.3f} "
             f"{row['warm_latency_ms']['median']:>10.3f} "
@@ -323,14 +471,14 @@ def print_summary(rows: list[dict[str, object]]) -> None:
 def print_per_benchmark(rows: list[dict[str, object]]) -> None:
     for row in rows:
         print()
-        print(f"{row['candidate']} [{row['backend']}]")
+        print(f"{row['candidate']} [{row['backend']}, {row['mode']}]")
         for benchmark_name, benchmark_summary in row["per_benchmark"].items():
-            print(
-                f"  {benchmark_name:<42} "
-                f"load_med={benchmark_summary['load_ms']['median']:.3f} "
-                f"warm_med={benchmark_summary['warm_latency_ms']['median']:.3f} "
-                f"warm_p95={benchmark_summary['warm_latency_ms']['p95']:.3f}"
-            )
+            parts = [f"  {benchmark_name:<42}"]
+            if "load_ms" in benchmark_summary:
+                parts.append(f"load_med={benchmark_summary['load_ms']['median']:.3f}")
+            parts.append(f"warm_med={benchmark_summary['warm_latency_ms']['median']:.3f}")
+            parts.append(f"warm_p95={benchmark_summary['warm_latency_ms']['p95']:.3f}")
+            print(" ".join(parts))
 
 
 def write_json(path: pathlib.Path, payload: dict[str, object]) -> None:
@@ -343,6 +491,7 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
     fieldnames = [
         "candidate",
         "backend",
+        "mode",
         "examples",
         "file_size_bytes",
         "load_mean_ms",
@@ -362,6 +511,7 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
                 {
                     "candidate": row["candidate"],
                     "backend": row["backend"],
+                    "mode": row["mode"],
                     "examples": row["examples"],
                     "file_size_bytes": row["file_size_bytes"],
                     "load_mean_ms": row["load_ms"]["mean"],
@@ -379,8 +529,13 @@ def write_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
 def main() -> int:
     args = parse_args()
     executable = pathlib.Path(args.executable)
-    if not executable.is_file():
-        raise RuntimeError(f"nli executable not found: {executable}")
+    persistent_executable = pathlib.Path(args.persistent_executable)
+    if args.mode == "coldstart":
+        if not executable.is_file():
+            raise RuntimeError(f"nli executable not found: {executable}")
+    else:
+        if not persistent_executable.is_file():
+            raise RuntimeError(f"persistent runtime benchmark executable not found: {persistent_executable}")
 
     models = resolve_models(args)
     for _, model_path in models:
@@ -403,18 +558,29 @@ def main() -> int:
     rows: list[dict[str, object]] = []
     for candidate_name, model_path in models:
         for backend in backends:
-            summary = benchmark_model_backend(
-                executable,
-                model_path,
-                backend,
-                args.repeat,
-                args.warmup,
-                examples,
-            )
+            if args.mode == "coldstart":
+                summary = benchmark_model_backend_coldstart(
+                    executable,
+                    model_path,
+                    backend,
+                    args.repeat,
+                    args.warmup,
+                    examples,
+                )
+            else:
+                summary = benchmark_model_backend_persistent(
+                    persistent_executable,
+                    model_path,
+                    backend,
+                    args.repeat,
+                    args.warmup,
+                    examples,
+                )
             rows.append(
                 {
                     "candidate": candidate_name,
                     "backend": backend,
+                    "mode": args.mode,
                     **summary,
                 }
             )
@@ -436,6 +602,7 @@ def main() -> int:
     payload = {
         "examples": len(examples),
         "sources": sorted({example.benchmark for example in examples}),
+        "mode": args.mode,
         "repeat": args.repeat,
         "warmup": args.warmup,
         "sample_mode": args.sample_mode,

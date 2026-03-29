@@ -7,6 +7,7 @@
 namespace nli {
 
 struct NliEvalExample {
+    std::string benchmark;
     std::string id;
     std::optional<std::string> label;
     std::string premise;

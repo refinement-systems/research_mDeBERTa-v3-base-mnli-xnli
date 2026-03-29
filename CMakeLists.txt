@@ -161,6 +161,11 @@ add_executable(nli-eval
 )
 target_link_libraries(nli-eval PRIVATE nli_common)
 
+add_executable(nli-runtime-bench
+    src/runtime_bench_main.cpp
+)
+target_link_libraries(nli-runtime-bench PRIVATE nli_common)
+
 if (NLI_BUILD_TESTS)
     enable_testing()
 
@@ -203,6 +208,10 @@ install(TARGETS nli nli-topical-chat
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(TARGETS nli-eval
+    COMPONENT runtime
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS nli-runtime-bench
     COMPONENT runtime
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
