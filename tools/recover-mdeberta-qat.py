@@ -276,6 +276,17 @@ def model_inputs(tokenizer, batch):
     return encoded
 
 
+def single_example_inputs(tokenizer, item):
+    encoded = tokenizer(
+        [item["premise"]],
+        [item["hypothesis"]],
+        truncation=True,
+        padding=True,
+        return_tensors="pt",
+    )
+    return {key: value for key, value in encoded.items()}
+
+
 def validate_model(model, tokenizer, rows, metric, reference_labels, batch_size, device):
     model.eval()
     total = 0
@@ -335,12 +346,7 @@ if payload["metric"] == "hf_agreement":
 
 quantization_dataset = nncf.Dataset(
     train_rows,
-    lambda item: tokenizer(
-        item["premise"],
-        item["hypothesis"],
-        truncation=True,
-        return_tensors="pt",
-    ),
+    lambda item: single_example_inputs(tokenizer, item),
 )
 
 ignored_scope = None
@@ -349,7 +355,7 @@ ignored_names = ignored_module_names(
     int(float_model.config.num_hidden_layers),
 )
 if ignored_names:
-    ignored_scope = nncf.IgnoredScope(names=ignored_names)
+    ignored_scope = nncf.IgnoredScope(names=ignored_names, validate=False)
 
 quantized_model = nncf.quantize(
     float_model,
