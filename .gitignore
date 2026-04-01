@@ -3,4 +3,4 @@ builddir/*
 models/*
 !models/.keep
 tools/__pycache__/*
-
+scratchpad/*

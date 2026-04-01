@@ -63,8 +63,8 @@ def parse_args() -> argparse.Namespace:
             """
         ),
     )
-    parser.add_argument("--input", default=DEFAULT_INPUT)
-    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--input", "--src", default=DEFAULT_INPUT, dest="input")
+    parser.add_argument("--output", "--dest", default=DEFAULT_OUTPUT, dest="output")
     parser.add_argument("--tokenizer-source", default=DEFAULT_TOKENIZER_SOURCE)
     parser.add_argument("--hf-source", default=DEFAULT_HF_SOURCE)
     parser.add_argument(

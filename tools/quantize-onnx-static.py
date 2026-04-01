@@ -48,12 +48,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
+        "--src",
         default=DEFAULT_INPUT,
+        dest="input",
         help=f"Float ONNX model used as the source (default: {DEFAULT_INPUT})",
     )
     parser.add_argument(
         "--output",
+        "--dest",
         default=DEFAULT_OUTPUT,
+        dest="output",
         help=f"Output path for the static-quantized model (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(

@@ -10,6 +10,8 @@ import tempfile
 import textwrap
 import venv
 
+from mdeberta_onnx_quantization import SUPPORTED_IGNORE_FAMILIES, ignored_nodes_for_family
+
 
 DEFAULT_INPUT = "models/mdeberta/onnx/model.onnx"
 DEFAULT_OUTPUT_DIR = "models/mdeberta/onnx/candidates"
@@ -44,7 +46,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
+        "--src",
         default=DEFAULT_INPUT,
+        dest="input",
         help=f"Float ONNX model used as the source (default: {DEFAULT_INPUT})",
     )
     parser.add_argument(
@@ -60,7 +64,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
+        "--dest",
         default="",
+        dest="output",
         help="Output path for --preset single",
     )
     parser.add_argument(
@@ -74,6 +80,15 @@ def parse_args() -> argparse.Namespace:
         "--nodes-to-exclude",
         default="",
         help="Comma-separated node names to exclude from quantization in --preset single",
+    )
+    parser.add_argument(
+        "--ignore-family",
+        choices=SUPPORTED_IGNORE_FAMILIES,
+        default="none",
+        help=(
+            "Structured exclusion family to keep in float in --preset single "
+            f"(default: none; choices: {', '.join(SUPPORTED_IGNORE_FAMILIES)})"
+        ),
     )
     parser.add_argument(
         "--per-channel",
@@ -175,6 +190,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
                 "nodes_to_exclude": [
                     node.strip() for node in args.nodes_to_exclude.split(",") if node.strip()
                 ],
+                "ignore_family": args.ignore_family,
                 "preprocess": args.preprocess,
                 "skip_preprocess_optimization": args.skip_preprocess_optimization,
             }
@@ -190,6 +206,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": [],
             "nodes_to_exclude": [],
+            "ignore_family": "none",
             "preprocess": False,
             "skip_preprocess_optimization": False,
         },
@@ -201,6 +218,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": [],
             "nodes_to_exclude": [],
+            "ignore_family": "none",
             "preprocess": False,
             "skip_preprocess_optimization": False,
         },
@@ -212,6 +230,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "ignore_family": "none",
             "preprocess": False,
             "skip_preprocess_optimization": False,
         },
@@ -223,6 +242,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "ignore_family": "none",
             "preprocess": False,
             "skip_preprocess_optimization": False,
         },
@@ -234,6 +254,7 @@ def candidate_specs(args: argparse.Namespace) -> list[dict[str, object]]:
             "reduce_range": False,
             "op_types": ["MatMul"],
             "nodes_to_exclude": [],
+            "ignore_family": "none",
             "preprocess": False,
             "skip_preprocess_optimization": False,
         },
@@ -248,6 +269,13 @@ def main() -> int:
         raise RuntimeError(f"Input model not found: {input_model}")
 
     specs = candidate_specs(args)
+    for spec in specs:
+        nodes_to_exclude = set(spec["nodes_to_exclude"])
+        if spec.get("ignore_family", "none") != "none":
+            nodes_to_exclude.update(
+                ignored_nodes_for_family(input_model, spec["ignore_family"])
+            )
+        spec["nodes_to_exclude"] = sorted(nodes_to_exclude)
     for spec in specs:
         output_path = pathlib.Path(spec["output"])
         output_path.parent.mkdir(parents=True, exist_ok=True)

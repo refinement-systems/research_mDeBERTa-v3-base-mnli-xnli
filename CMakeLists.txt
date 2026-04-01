@@ -5,6 +5,7 @@ project(nli LANGUAGES C CXX)
 include(GNUInstallDirs)
 include(CheckLanguage)
 include(CTest)
+find_package(SQLite3 REQUIRED)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +36,8 @@ endif()
 
 set(CMAKE_DISABLE_FIND_PACKAGE_ONNX TRUE)
 set(CMAKE_DISABLE_FIND_PACKAGE_onnx TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_Flatbuffers TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_flatbuffers TRUE)
 set(protobuf_WITH_ZLIB OFF CACHE BOOL "" FORCE)
 set(onnxruntime_BUILD_OBJC OFF CACHE BOOL "" FORCE)
 set(onnxruntime_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
@@ -167,6 +170,27 @@ add_executable(nli-runtime-bench
 )
 target_link_libraries(nli-runtime-bench PRIVATE nli_common)
 
+add_library(nli_study_common
+    src/sha256.cpp
+    src/study_command_line.cpp
+    src/study_workflow.cpp
+)
+target_include_directories(nli_study_common PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(nli_study_common PUBLIC
+    nli_common
+    ${SQLite3_LIBRARIES}
+)
+target_compile_definitions(nli_study_common PRIVATE
+    NLI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+add_executable(nli-study
+    src/study_main.cpp
+)
+target_link_libraries(nli-study PRIVATE nli_study_common)
+
 if (NLI_BUILD_TESTS)
     enable_testing()
 
@@ -192,14 +216,37 @@ if (NLI_BUILD_TESTS)
         COMMAND nli_topical_chat_test
     )
 
+    add_executable(nli_study_test
+        tests/study_test.cpp
+    )
+    target_link_libraries(nli_study_test PRIVATE nli_study_common)
+    target_compile_definitions(nli_study_test PRIVATE
+        NLI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    add_test(
+        NAME study_test
+        COMMAND nli_study_test
+    )
+
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(
+        NAME nli_python_study_tests
+        COMMAND ${CMAKE_COMMAND} -E env
+            PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}
+            ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/tests/python -p test_*.py
+    )
+
     add_custom_target(nli_tests
-        DEPENDS nli_session_factory_test nli_topical_chat_test
+        DEPENDS nli_session_factory_test nli_topical_chat_test nli_study_test
     )
 
     add_custom_target(nli_check
         COMMAND $<TARGET_FILE:nli_session_factory_test>
         COMMAND $<TARGET_FILE:nli_topical_chat_test>
-        DEPENDS nli_session_factory_test nli_topical_chat_test
+        COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}
+                ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/tests/python -p test_*.py
+        COMMAND $<TARGET_FILE:nli_study_test>
+        DEPENDS nli_session_factory_test nli_topical_chat_test nli_study_test
         USES_TERMINAL
     )
 endif()
@@ -213,6 +260,10 @@ install(TARGETS nli-eval
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(TARGETS nli-runtime-bench
+    COMPONENT runtime
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+install(TARGETS nli-study
     COMPONENT runtime
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

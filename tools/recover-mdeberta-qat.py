@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
             "result back to ONNX for the existing benchmark harness."
         )
     )
-    parser.add_argument("--hf-source", default=DEFAULT_HF_SOURCE)
-    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--hf-source", "--src", default=DEFAULT_HF_SOURCE, dest="hf_source")
+    parser.add_argument("--output", "--dest", default=DEFAULT_OUTPUT, dest="output")
     parser.add_argument(
         "--ignored-scope-family",
         choices=["none", "attention_only", "attention_proj_only"],
