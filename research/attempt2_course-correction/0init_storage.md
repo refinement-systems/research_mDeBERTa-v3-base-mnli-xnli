@@ -25,7 +25,7 @@ Backend:
 
 Pre-initialize Backend to one "CPU" and one "CoreML" 
 
-Evaluation: (one per dataset x quantization x backend)
+Evaluation: (one per data row x quantization x backend)
 - primary key
 - Dataset:key
 - Quantization:key
