@@ -8,7 +8,8 @@ Execution note as of 2026-04-02:
 - `nncf_fidelity_attention_only_n128_drop0p005` also materialized and reached the validation frontier, but it was slow enough on this machine to be treated as only somewhat applicable
 - `nncf_fidelity_attention_only_n128_drop0p002` was stopped and retired as too slow for this machine
 - the `n300` pair was not started after the machine-based pruning decision
-- CoreML remains blocked at the backend-validity stage, so the active `plan1` run is still CPU-only
+- the untouched CPU `fidelity_test_plan1` sweep finished on the locked frontier points, and `nncf_accuracy_attention_only` remained the best practical CPU recommendation
+- CoreML follow-up is deferred until after CPU model selection; the last observed state in this environment was still backend-validity failure
 
 `plan0` answered the first course-correction question. It produced a credible CPU recommendation, showed that the tiny dynamic tier is too lossy under the new fidelity objective, and showed that the current CoreML lane is not yet trustworthy in this environment.
 
