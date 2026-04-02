@@ -2,10 +2,13 @@
 
 import argparse
 import csv
+import datetime
+import email.utils
 import json
 import pathlib
 import random
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +21,11 @@ DEFAULT_MNLI_PER_LABEL = 100
 DEFAULT_XNLI_PER_LABEL = 50
 DEFAULT_XNLI_LANGUAGES = ("en", "de", "es", "fr", "zh")
 DEFAULT_PAGE_SIZE = 100
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 1.0
+DEFAULT_MAX_RETRIES = 8
+DEFAULT_INITIAL_BACKOFF_SECONDS = 5.0
+DEFAULT_MAX_BACKOFF_SECONDS = 120.0
 LABELS = ("entailment", "neutral", "contradiction")
 
 
@@ -29,6 +37,92 @@ class ExportTarget:
     per_label: int
     skip_per_label: int
     output_name: str
+
+
+class DatasetsServerClient:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        request_timeout_seconds: float,
+        min_request_interval_seconds: float,
+        max_retries: int,
+        initial_backoff_seconds: float,
+        max_backoff_seconds: float,
+    ) -> None:
+        self.base_url = base_url
+        self.request_timeout_seconds = request_timeout_seconds
+        self.min_request_interval_seconds = min_request_interval_seconds
+        self.max_retries = max_retries
+        self.initial_backoff_seconds = initial_backoff_seconds
+        self.max_backoff_seconds = max_backoff_seconds
+        self._last_request_started_at: float | None = None
+
+    def fetch_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        query = urllib.parse.urlencode(params, safe="/")
+        url = f"{self.base_url}{path}?{query}"
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "nli-eval-slice-downloader/1.0",
+            },
+        )
+
+        for attempt in range(self.max_retries + 1):
+            self._wait_for_request_slot()
+            try:
+                with urllib.request.urlopen(request, timeout=self.request_timeout_seconds) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+                if self._should_retry_http_error(exc.code) and attempt < self.max_retries:
+                    delay = self._compute_retry_delay_seconds(exc, attempt)
+                    print(
+                        f"Retrying HTTP {exc.code} for {url} in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{self.max_retries})",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+                suffix = f": {detail}" if detail else ""
+                raise RuntimeError(f"HTTP {exc.code} while fetching {url}{suffix}") from exc
+            except urllib.error.URLError as exc:
+                if attempt < self.max_retries:
+                    delay = self._compute_retry_delay_seconds(None, attempt)
+                    print(
+                        f"Retrying network error for {url} in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{self.max_retries}): {exc.reason}",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(f"Failed to fetch {url}: {exc.reason}") from exc
+
+        raise RuntimeError(f"Unreachable retry state while fetching {url}")
+
+    def _wait_for_request_slot(self) -> None:
+        if self._last_request_started_at is not None:
+            elapsed = time.monotonic() - self._last_request_started_at
+            remaining = self.min_request_interval_seconds - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_request_started_at = time.monotonic()
+
+    @staticmethod
+    def _should_retry_http_error(status_code: int) -> bool:
+        return status_code == 429 or 500 <= status_code < 600
+
+    def _compute_retry_delay_seconds(
+        self,
+        http_error: urllib.error.HTTPError | None,
+        attempt: int,
+    ) -> float:
+        retry_after_seconds = parse_retry_after_seconds(http_error) if http_error else None
+        if retry_after_seconds is not None:
+            return min(max(retry_after_seconds, self.initial_backoff_seconds), self.max_backoff_seconds)
+        exponential = self.initial_backoff_seconds * (2 ** attempt)
+        return min(exponential, self.max_backoff_seconds)
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,6 +234,45 @@ def parse_args() -> argparse.Namespace:
         default=API_BASE_URL,
         help=f"Datasets-server API base URL (default: {API_BASE_URL})",
     )
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help=(
+            "Per-request timeout for datasets-server calls "
+            f"(default: {DEFAULT_REQUEST_TIMEOUT_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--min-request-interval-seconds",
+        type=float,
+        default=DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+        help=(
+            "Minimum time between request starts, used to avoid hitting rate limits "
+            f"(default: {DEFAULT_MIN_REQUEST_INTERVAL_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=f"Maximum retry count for 429/5xx/network errors (default: {DEFAULT_MAX_RETRIES})",
+    )
+    parser.add_argument(
+        "--initial-backoff-seconds",
+        type=float,
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        help=(
+            "Initial retry backoff, doubled on each retry until the max backoff is reached "
+            f"(default: {DEFAULT_INITIAL_BACKOFF_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--max-backoff-seconds",
+        type=float,
+        default=DEFAULT_MAX_BACKOFF_SECONDS,
+        help=f"Maximum retry backoff in seconds (default: {DEFAULT_MAX_BACKOFF_SECONDS})",
+    )
 
     args = parser.parse_args()
 
@@ -155,30 +288,44 @@ def parse_args() -> argparse.Namespace:
         parser.error("--mnli-skip-per-label must be non-negative")
     if args.xnli_skip_per_label is not None and args.xnli_skip_per_label < 0:
         parser.error("--xnli-skip-per-label must be non-negative")
+    if args.request_timeout_seconds <= 0:
+        parser.error("--request-timeout-seconds must be positive")
+    if args.min_request_interval_seconds < 0:
+        parser.error("--min-request-interval-seconds must be non-negative")
+    if args.max_retries < 0:
+        parser.error("--max-retries must be non-negative")
+    if args.initial_backoff_seconds <= 0:
+        parser.error("--initial-backoff-seconds must be positive")
+    if args.max_backoff_seconds <= 0:
+        parser.error("--max-backoff-seconds must be positive")
+    if args.initial_backoff_seconds > args.max_backoff_seconds:
+        parser.error("--initial-backoff-seconds must not exceed --max-backoff-seconds")
 
     return args
 
 
-def fetch_json(base_url: str, path: str, params: dict[str, object]) -> dict[str, object]:
-    query = urllib.parse.urlencode(params, safe="/")
-    url = f"{base_url}{path}?{query}"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "nli-eval-slice-downloader/1.0",
-        },
-    )
+def parse_retry_after_seconds(http_error: urllib.error.HTTPError | None) -> float | None:
+    if http_error is None or http_error.headers is None:
+        return None
+    header_value = http_error.headers.get("Retry-After")
+    if not header_value:
+        return None
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace").strip()
-        suffix = f": {detail}" if detail else ""
-        raise RuntimeError(f"HTTP {exc.code} while fetching {url}{suffix}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Failed to fetch {url}: {exc.reason}") from exc
+        return max(float(header_value), 0.0)
+    except ValueError:
+        pass
+
+    try:
+        retry_at = email.utils.parsedate_to_datetime(header_value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if retry_at is None:
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max((retry_at - now).total_seconds(), 0.0)
 
 
 def label_names_from_features(features: list[dict[str, object]]) -> list[str]:
@@ -290,7 +437,7 @@ def build_targets(args: argparse.Namespace) -> list[ExportTarget]:
 
 
 def collect_balanced_examples(
-    api_base_url: str,
+    client: DatasetsServerClient,
     target: ExportTarget,
     page_size: int,
     seed: int,
@@ -303,8 +450,7 @@ def collect_balanced_examples(
     dataset_slug = target.dataset.replace("/", "-")
 
     while any(len(examples) < target.per_label for examples in kept_by_label.values()):
-        payload = fetch_json(
-            api_base_url,
+        payload = client.fetch_json(
             "/rows",
             {
                 "dataset": target.dataset,
@@ -420,6 +566,14 @@ def main() -> int:
     args = parse_args()
     output_dir = pathlib.Path(args.output_dir)
     targets = build_targets(args)
+    client = DatasetsServerClient(
+        args.api_base_url,
+        request_timeout_seconds=args.request_timeout_seconds,
+        min_request_interval_seconds=args.min_request_interval_seconds,
+        max_retries=args.max_retries,
+        initial_backoff_seconds=args.initial_backoff_seconds,
+        max_backoff_seconds=args.max_backoff_seconds,
+    )
 
     for target in targets:
         output_path = output_path_for(output_dir, target)
@@ -432,7 +586,7 @@ def main() -> int:
             f"({target.per_label} per label)"
         )
         rows = collect_balanced_examples(
-            args.api_base_url,
+            client,
             target,
             page_size=args.page_size,
             seed=args.seed,

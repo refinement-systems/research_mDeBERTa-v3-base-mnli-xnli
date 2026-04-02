@@ -17,6 +17,11 @@ DEFAULT_SCRATCHPAD_ROOT = REPO_ROOT / "scratchpad" / "attempt3_coreml"
 DEFAULT_CATALOG_PATH = REPO_ROOT / "research" / "attempt3_coreml" / "study_quantization_catalog.json"
 DEFAULT_STUDY_BINARY = REPO_ROOT / "builddir" / "nli-study"
 DEFAULT_LANGUAGES = ("en", "de", "es", "fr", "zh")
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
+DEFAULT_MIN_REQUEST_INTERVAL_SECONDS = 2.0
+DEFAULT_MAX_RETRIES = 10
+DEFAULT_INITIAL_BACKOFF_SECONDS = 10.0
+DEFAULT_MAX_BACKOFF_SECONDS = 300.0
 
 SMOKE_DATASETS = (
     "hf-probe-set.tsv",
@@ -135,6 +140,42 @@ def parse_args() -> argparse.Namespace:
         help="Also run the secondary integer controls on smoke and validation.",
     )
     parser.add_argument(
+        "--request-timeout-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        help=(
+            "Per-request timeout passed to the datasets downloader "
+            f"(default: {DEFAULT_REQUEST_TIMEOUT_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--min-request-interval-seconds",
+        type=float,
+        default=DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+        help=(
+            "Minimum interval between dataset-server requests for this attempt "
+            f"(default: {DEFAULT_MIN_REQUEST_INTERVAL_SECONDS})"
+        ),
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=DEFAULT_MAX_RETRIES,
+        help=f"Maximum datasets-server retry count (default: {DEFAULT_MAX_RETRIES})",
+    )
+    parser.add_argument(
+        "--initial-backoff-seconds",
+        type=float,
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        help=f"Initial retry backoff for datasets-server calls (default: {DEFAULT_INITIAL_BACKOFF_SECONDS})",
+    )
+    parser.add_argument(
+        "--max-backoff-seconds",
+        type=float,
+        default=DEFAULT_MAX_BACKOFF_SECONDS,
+        help=f"Maximum retry backoff for datasets-server calls (default: {DEFAULT_MAX_BACKOFF_SECONDS})",
+    )
+    parser.add_argument(
         "--skip-test",
         action="store_true",
         help="Stop after validation and do not run the untouched test split.",
@@ -173,6 +214,11 @@ def prepare_scratchpad_assets(
     api_base_url: str,
     page_size: int,
     seed: int,
+    request_timeout_seconds: float,
+    min_request_interval_seconds: float,
+    max_retries: int,
+    initial_backoff_seconds: float,
+    max_backoff_seconds: float,
     force: bool,
 ) -> None:
     run_command(
@@ -212,6 +258,16 @@ def prepare_scratchpad_assets(
         str(page_size),
         "--api-base-url",
         api_base_url,
+        "--request-timeout-seconds",
+        str(request_timeout_seconds),
+        "--min-request-interval-seconds",
+        str(min_request_interval_seconds),
+        "--max-retries",
+        str(max_retries),
+        "--initial-backoff-seconds",
+        str(initial_backoff_seconds),
+        "--max-backoff-seconds",
+        str(max_backoff_seconds),
     ]
     for language in languages:
         validation_command.extend(["--xnli-language", language])
@@ -246,6 +302,16 @@ def prepare_scratchpad_assets(
         str(page_size),
         "--api-base-url",
         api_base_url,
+        "--request-timeout-seconds",
+        str(request_timeout_seconds),
+        "--min-request-interval-seconds",
+        str(min_request_interval_seconds),
+        "--max-retries",
+        str(max_retries),
+        "--initial-backoff-seconds",
+        str(initial_backoff_seconds),
+        "--max-backoff-seconds",
+        str(max_backoff_seconds),
     ]
     for language in languages:
         test_command.extend(["--xnli-language", language])
@@ -458,6 +524,11 @@ def main() -> int:
         args.api_base_url,
         args.page_size,
         args.seed,
+        args.request_timeout_seconds,
+        args.min_request_interval_seconds,
+        args.max_retries,
+        args.initial_backoff_seconds,
+        args.max_backoff_seconds,
         args.force,
     )
     initialize_study_db(study_binary, scratchpad_root, catalog_path, args.force)
