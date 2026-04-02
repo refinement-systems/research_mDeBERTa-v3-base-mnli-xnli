@@ -63,7 +63,7 @@ def validation_dataset_names(languages: tuple[str, ...]) -> list[str]:
             "mnli",
             "train",
             64,
-            "attempt3-coreml-validation",
+            "attempt3-coreml-search-validation",
             256,
         )
     ]
@@ -73,7 +73,7 @@ def validation_dataset_names(languages: tuple[str, ...]) -> list[str]:
                 f"xnli-{language}",
                 "validation",
                 32,
-                "attempt3-coreml-validation",
+                "attempt3-coreml-search-validation",
                 96,
             )
         )
@@ -232,6 +232,12 @@ def prepare_scratchpad_assets(
     )
 
     dataset_root = scratchpad_root / "datasets"
+    dataset_root.mkdir(parents=True, exist_ok=True)
+
+    # Remove the deprecated attempt3 validation filenames so the existing study
+    # initializer does not trip over them before the rebuilt binary is in place.
+    for stale_path in dataset_root.glob("*attempt3-coreml-validation*.tsv"):
+        stale_path.unlink()
 
     validation_command = [
         sys.executable,
@@ -251,7 +257,7 @@ def prepare_scratchpad_assets(
         "--xnli-skip-per-label",
         "96",
         "--name-tag",
-        "attempt3-coreml-validation",
+        "attempt3-coreml-search-validation",
         "--seed",
         str(seed),
         "--page-size",
@@ -318,6 +324,26 @@ def prepare_scratchpad_assets(
     if force:
         test_command.append("--force")
     run_command(test_command)
+
+
+def preflight_fp16_candidate(
+    scratchpad_root: pathlib.Path,
+    force: bool,
+) -> None:
+    source_path = scratchpad_root / "models" / "mdeberta" / "onnx" / "model.onnx"
+    dest_path = scratchpad_root / "candidates" / "reference_fp16.onnx"
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "tools" / "convert-onnx-to-fp16.py"),
+        "--src",
+        str(source_path),
+        "--dest",
+        str(dest_path),
+        "--install-deps",
+    ]
+    if force:
+        command.append("--force")
+    run_command(command)
 
 
 def initialize_study_db(
@@ -532,6 +558,8 @@ def main() -> int:
         args.force,
     )
     initialize_study_db(study_binary, scratchpad_root, catalog_path, args.force)
+    print("Preflighting CoreML fp16 candidate materialization.")
+    preflight_fp16_candidate(scratchpad_root, args.force)
 
     print("Running CoreML fp32 reference gates.")
     for dataset_name in [*SMOKE_DATASETS, *validation_datasets]:

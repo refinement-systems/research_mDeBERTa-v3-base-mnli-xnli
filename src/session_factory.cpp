@@ -7,21 +7,23 @@
 namespace nli {
 namespace {
 
-Ort::SessionOptions CreateBaseSessionOptions() {
+Ort::SessionOptions CreateBaseSessionOptions(GraphOptimizationLevel optimization_level) {
     Ort::SessionOptions session_options;
     session_options.SetIntraOpNumThreads(1);
-    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    session_options.SetGraphOptimizationLevel(optimization_level);
     return session_options;
 }
 
 Ort::Session CreateCpuSession(const Ort::Env& env, const std::string& model_path) {
-    auto session_options = CreateBaseSessionOptions();
+    auto session_options = CreateBaseSessionOptions(GraphOptimizationLevel::ORT_ENABLE_ALL);
     return Ort::Session(env, model_path.c_str(), session_options);
 }
 
 #if defined(NLI_HAS_COREML_PROVIDER)
 Ort::Session CreateCoreMLSession(const Ort::Env& env, const std::string& model_path) {
-    auto session_options = CreateBaseSessionOptions();
+    // BASIC avoids aggressive fusions that break the fp16 CoreML attempt models
+    // while still allowing standard ORT preprocessing on this backend.
+    auto session_options = CreateBaseSessionOptions(GraphOptimizationLevel::ORT_ENABLE_BASIC);
     Ort::ThrowOnError(
         OrtSessionOptionsAppendExecutionProvider_CoreML(session_options, COREML_FLAG_USE_NONE));
     return Ort::Session(env, model_path.c_str(), session_options);
