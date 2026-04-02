@@ -1,0 +1,63 @@
+[
+  {
+    "name": "reference",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Downloaded float ONNX reference for the CoreML attempt."
+  },
+  {
+    "name": "reference_fp16",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/convert-onnx-to-fp16.py",
+      "--src=${SRC}",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/reference_fp16.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "FP16-converted ONNX copy of the float reference, keeping external I/O types compatible with the current runner."
+  },
+  {
+    "name": "model_quantized",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model_quantized.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Vendor quantized ONNX control. Secondary measurement-driven candidate on CoreML EP."
+  },
+  {
+    "name": "dynamic_qint8_default",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/dynamic_qint8_default.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Cheap dynamic int8 ONNX control. Not a default target for CoreML EP."
+  }
+]
