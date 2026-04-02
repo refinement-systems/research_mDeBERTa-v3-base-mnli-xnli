@@ -336,6 +336,61 @@ void VerifyStudyInitIsIdempotent() {
     RemoveTempStudyWorkspace(workspace);
 }
 
+void VerifyStudyInitAcceptsAttemptTaggedValidationAndTestDatasets() {
+    const TempStudyWorkspace workspace = CreateTempStudyWorkspace();
+    try {
+        const std::filesystem::path dataset_root = workspace.scratchpad_root / "datasets";
+        std::filesystem::create_directories(dataset_root);
+        for (const std::string& dataset_name : {
+                 "mnli-train-calibration-64-per-label.tsv",
+                 "mnli-train-attempt3-coreml-validation-skip256-64-per-label.tsv",
+                 "mnli-validation_matched-attempt3-coreml-test-skip300-50-per-label.tsv",
+                 "xnli-en-validation-attempt3-coreml-validation-skip96-32-per-label.tsv",
+                 "xnli-en-test-attempt3-coreml-test-skip100-50-per-label.tsv",
+                 "hf-core-probe.tsv",
+             }) {
+            std::filesystem::copy_file(
+                EvalFixturePath(),
+                dataset_root / dataset_name,
+                std::filesystem::copy_options::overwrite_existing);
+        }
+        WriteReferenceAssets(workspace);
+        WriteCatalog(workspace, true);
+
+        const nli::StudyInitCommandLineOptions options{
+            workspace.scratchpad_root.string(),
+            workspace.catalog_path.string(),
+            false,
+        };
+        std::ostringstream log;
+        nli::InitializeStudyWorkspace(options, log);
+
+        sqlite3* db = OpenDb(workspace);
+        try {
+            if (QueryCount(db, "SELECT COUNT(*) FROM dataset WHERE role = 'calibration'") != 1) {
+                throw std::runtime_error("expected one calibration dataset");
+            }
+            if (QueryCount(db, "SELECT COUNT(*) FROM dataset WHERE role = 'fidelity_validation'") != 2) {
+                throw std::runtime_error("expected two fidelity_validation datasets");
+            }
+            if (QueryCount(db, "SELECT COUNT(*) FROM dataset WHERE role = 'fidelity_test'") != 2) {
+                throw std::runtime_error("expected two fidelity_test datasets");
+            }
+            if (QueryCount(db, "SELECT COUNT(*) FROM dataset WHERE role = 'smoke'") != 1) {
+                throw std::runtime_error("expected one smoke dataset");
+            }
+        } catch (...) {
+            sqlite3_close(db);
+            throw;
+        }
+        sqlite3_close(db);
+    } catch (...) {
+        RemoveTempStudyWorkspace(workspace);
+        throw;
+    }
+    RemoveTempStudyWorkspace(workspace);
+}
+
 void VerifyStudyRunMaterializesArtifactAndStoresEvaluations() {
     const TempStudyWorkspace workspace = CreateTempStudyWorkspace();
     try {
@@ -580,6 +635,7 @@ int main() {
     VerifyStudyInitOptionsUseDefaults();
     VerifyStudyRunOptionsRequireQuantizationAndDataset();
     VerifyStudyInitIsIdempotent();
+    VerifyStudyInitAcceptsAttemptTaggedValidationAndTestDatasets();
     VerifyStudyRunMaterializesArtifactAndStoresEvaluations();
     VerifyStudyRunResumesMissingRowsAndRegeneratesZeroByteArtifacts();
     VerifyStudyRunRejectsDisallowedBackendBeforeMaterialization();

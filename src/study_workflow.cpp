@@ -289,13 +289,14 @@ std::string ClassifyDatasetRole(const std::string& dataset_name) {
     if (dataset_name.find("calibration") != std::string::npos) {
         return "calibration";
     }
-    if (dataset_name.find("search-validation") != std::string::npos) {
-        return "fidelity_validation";
-    }
     if (dataset_name.find("validation_matched") != std::string::npos ||
         dataset_name.find("validation_mismatched") != std::string::npos ||
         dataset_name.find("-test-") != std::string::npos) {
         return "fidelity_test";
+    }
+    if (dataset_name.find("search-validation") != std::string::npos ||
+        dataset_name.find("-validation-") != std::string::npos) {
+        return "fidelity_validation";
     }
     throw std::runtime_error("Could not infer dataset role from filename: " + dataset_name);
 }

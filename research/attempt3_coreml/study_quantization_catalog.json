@@ -20,7 +20,8 @@
     "generator_args_json": [
       "tools/convert-onnx-to-fp16.py",
       "--src=${SRC}",
-      "--dest=${DEST}"
+      "--dest=${DEST}",
+      "--install-deps"
     ],
     "source_artifact_name": "reference",
     "output_relpath": "candidates/reference_fp16.onnx",

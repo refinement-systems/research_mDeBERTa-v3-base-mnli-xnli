@@ -45,6 +45,25 @@ class StudyCatalogTest(unittest.TestCase):
             ],
         )
 
+    def test_attempt3_catalog_enables_fp16_dependency_bootstrap(self) -> None:
+        entries = study_catalog.load_catalog(
+            pathlib.Path("research/attempt3_coreml/study_quantization_catalog.json")
+        )
+        by_name = {entry["name"]: entry for entry in entries}
+        self.assertEqual(
+            [entry["name"] for entry in entries],
+            [
+                "reference",
+                "reference_fp16",
+                "model_quantized",
+                "dynamic_qint8_default",
+            ],
+        )
+        self.assertIn(
+            "--install-deps",
+            by_name["reference_fp16"]["generator_args_json"],
+        )
+
     def test_duplicate_names_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = pathlib.Path(tmp_dir) / "catalog.json"

@@ -74,12 +74,12 @@ Dataset roles:
     - `hf-core-probe.tsv`
 - `fidelity_validation`
   - generate fresh disjoint windows:
-    - `mnli-train-attempt3-coreml-validation-skip256-64-per-label.tsv`
-    - `xnli-de-validation-attempt3-coreml-validation-skip96-32-per-label.tsv`
-    - `xnli-en-validation-attempt3-coreml-validation-skip96-32-per-label.tsv`
-    - `xnli-es-validation-attempt3-coreml-validation-skip96-32-per-label.tsv`
-    - `xnli-fr-validation-attempt3-coreml-validation-skip96-32-per-label.tsv`
-    - `xnli-zh-validation-attempt3-coreml-validation-skip96-32-per-label.tsv`
+    - `mnli-train-attempt3-coreml-search-validation-skip256-64-per-label.tsv`
+    - `xnli-de-validation-attempt3-coreml-search-validation-skip96-32-per-label.tsv`
+    - `xnli-en-validation-attempt3-coreml-search-validation-skip96-32-per-label.tsv`
+    - `xnli-es-validation-attempt3-coreml-search-validation-skip96-32-per-label.tsv`
+    - `xnli-fr-validation-attempt3-coreml-search-validation-skip96-32-per-label.tsv`
+    - `xnli-zh-validation-attempt3-coreml-search-validation-skip96-32-per-label.tsv`
 - `fidelity_test`
   - generate fresh disjoint windows:
     - `mnli-validation_matched-attempt3-coreml-test-skip300-50-per-label.tsv`
