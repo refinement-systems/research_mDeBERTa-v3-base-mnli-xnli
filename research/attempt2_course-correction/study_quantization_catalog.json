@@ -1,0 +1,151 @@
+[
+  {
+    "name": "reference",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Downloaded float reference model."
+  },
+  {
+    "name": "model_quantized",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model_quantized.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Downloaded vendor quantized ONNX model."
+  },
+  {
+    "name": "dynamic_qint8_default",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/dynamic_qint8_default.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Dynamic qint8 baseline with default operator selection."
+  },
+  {
+    "name": "dynamic_qint8_per_channel",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--per-channel"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/dynamic_qint8_per_channel.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Dynamic qint8 baseline with per-channel weights."
+  },
+  {
+    "name": "nncf_accuracy_attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=gold_accuracy",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=300",
+      "--max-drop=0.01",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/attempt1/nncf_accuracy_attention_only.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Attempt1 NNCF accuracy-control candidate."
+  },
+  {
+    "name": "nncf_fidelity_attention_proj_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_proj_only",
+      "--subset-size=300",
+      "--max-drop=0.01",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Attempt1 NNCF fidelity-oriented candidate."
+  },
+  {
+    "name": "attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--op-type=MatMul",
+      "--ignore-family=attention_only"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/family_search/dynamic_qint8_matmul_attention_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Attempt0 attention-only finalist."
+  },
+  {
+    "name": "attention_proj_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--op-type=MatMul",
+      "--ignore-family=attention_proj_only"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/family_search/dynamic_qint8_matmul_attention_proj_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Attempt0 attention-projection-only finalist."
+  }
+]

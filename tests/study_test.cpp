@@ -61,7 +61,18 @@ optparse::OptionParserExcept MakeStudyRunParser() {
 
 class FakePredictor final : public nli::StudyPredictor {
 public:
-    explicit FakePredictor(std::string model_path) : model_path_(std::move(model_path)) {}
+    FakePredictor(std::string model_path, nli::SessionBackend actual_backend, bool used_fallback)
+        : model_path_(std::move(model_path)),
+          actual_backend_(actual_backend),
+          used_fallback_(used_fallback) {}
+
+    nli::SessionBackend ActualBackend() const override {
+        return actual_backend_;
+    }
+
+    bool UsedFallback() const override {
+        return used_fallback_;
+    }
 
     nli::NliLogits PredictLogits(const std::string& premise, const std::string& hypothesis) override {
         if (model_path_.find("model.onnx") != std::string::npos) {
@@ -78,14 +89,31 @@ public:
 
 private:
     std::string model_path_;
+    nli::SessionBackend actual_backend_;
+    bool used_fallback_;
 };
 
 nli::StudyPredictorFactory FakePredictorFactory() {
     return [](const std::string& model_path,
               const std::string&,
-              nli::SessionBackend,
+              nli::SessionBackend backend,
               std::ostream&) {
-        return std::make_unique<FakePredictor>(model_path);
+        return std::make_unique<FakePredictor>(model_path, backend, false);
+    };
+}
+
+nli::StudyPredictorFactory CoreMLFallbackPredictorFactory() {
+    return [](const std::string& model_path,
+              const std::string&,
+              nli::SessionBackend backend,
+              std::ostream&) {
+        if (backend == nli::SessionBackend::kCoreML) {
+            return std::make_unique<FakePredictor>(
+                model_path,
+                nli::SessionBackend::kCPU,
+                true);
+        }
+        return std::make_unique<FakePredictor>(model_path, backend, false);
     };
 }
 
@@ -215,6 +243,22 @@ sqlite3_int64 QueryCount(sqlite3* db, const std::string& sql) {
     const sqlite3_int64 value = sqlite3_column_int64(statement, 0);
     sqlite3_finalize(statement);
     return value;
+}
+
+std::string QueryText(sqlite3* db, const std::string& sql) {
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &statement, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("Failed to prepare text query");
+    }
+    const int rc = sqlite3_step(statement);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(statement);
+        throw std::runtime_error("Failed to execute text query");
+    }
+    const unsigned char* value = sqlite3_column_text(statement, 0);
+    const std::string text = value == nullptr ? "" : reinterpret_cast<const char*>(value);
+    sqlite3_finalize(statement);
+    return text;
 }
 
 void ExecSql(sqlite3* db, const std::string& sql) {
@@ -469,6 +513,67 @@ void VerifyStudyRunRejectsDisallowedBackendBeforeMaterialization() {
     }
 }
 
+void VerifyStudyRunFailsCoreMLFallbackWithoutRecordingRows() {
+    const TempStudyWorkspace workspace = CreateTempStudyWorkspace();
+    try {
+        WriteFixtureDatasets(workspace);
+        WriteReferenceAssets(workspace);
+        WriteCatalog(workspace, true);
+
+        const nli::StudyInitCommandLineOptions init_options{
+            workspace.scratchpad_root.string(),
+            workspace.catalog_path.string(),
+            false,
+        };
+        std::ostringstream init_log;
+        nli::InitializeStudyWorkspace(init_options, init_log);
+
+        const nli::StudyRunCommandLineOptions run_options{
+            workspace.scratchpad_root.string(),
+            "reference",
+            nli::SessionBackend::kCoreML,
+            "mnli-train-search-validation-skip64-64-per-label.tsv",
+            false,
+            false,
+        };
+        std::ostringstream run_log;
+        bool failed_as_expected = false;
+        try {
+            nli::RunStudyEvaluation(run_options, CoreMLFallbackPredictorFactory(), run_log);
+        } catch (const std::runtime_error&) {
+            failed_as_expected = true;
+        }
+        if (!failed_as_expected) {
+            throw std::runtime_error("expected CoreML CPU fallback to fail the study run");
+        }
+
+        sqlite3* db = OpenDb(workspace);
+        try {
+            if (QueryCount(db, "SELECT COUNT(*) FROM evaluation") != 0) {
+                throw std::runtime_error("fallback run should not store evaluation rows");
+            }
+            if (QueryCount(
+                    db,
+                    "SELECT COUNT(*) FROM evaluation_run WHERE status = 'completed'") != 0) {
+                throw std::runtime_error("fallback run should not be marked completed");
+            }
+            const std::string status =
+                QueryText(db, "SELECT status FROM evaluation_run LIMIT 1");
+            if (status != "failed") {
+                throw std::runtime_error("fallback run should be marked failed");
+            }
+        } catch (...) {
+            sqlite3_close(db);
+            throw;
+        }
+        sqlite3_close(db);
+    } catch (...) {
+        RemoveTempStudyWorkspace(workspace);
+        throw;
+    }
+    RemoveTempStudyWorkspace(workspace);
+}
+
 }  // namespace
 
 int main() {
@@ -478,5 +583,6 @@ int main() {
     VerifyStudyRunMaterializesArtifactAndStoresEvaluations();
     VerifyStudyRunResumesMissingRowsAndRegeneratesZeroByteArtifacts();
     VerifyStudyRunRejectsDisallowedBackendBeforeMaterialization();
+    VerifyStudyRunFailsCoreMLFallbackWithoutRecordingRows();
     return 0;
 }

@@ -224,6 +224,8 @@ DebertaNliModel::DebertaNliModel(
     tokenizer_config_ = LoadTokenizerAssetConfigForSentencePiece(sentencepiece_path);
 
     auto session_result = CreateInferenceSession(env_, model_path, backend, log);
+    backend_ = session_result.backend;
+    used_fallback_ = session_result.used_fallback;
     session_ = std::move(session_result.value);
 
     input_names_ = GetInputNames(session_, allocator_, input_name_storage_);
@@ -243,6 +245,14 @@ EncodedInputs DebertaNliModel::Encode(const std::string& premise, const std::str
 
 TokenizerSpecialTokenIds DebertaNliModel::GetSpecialTokenIds() const {
     return tokenizer_config_.special_token_ids;
+}
+
+SessionBackend DebertaNliModel::backend() const {
+    return backend_;
+}
+
+bool DebertaNliModel::used_fallback() const {
+    return used_fallback_;
 }
 
 NliScores DebertaNliModel::Predict(const std::string& premise, const std::string& hypothesis) {

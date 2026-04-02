@@ -57,6 +57,8 @@ public:
 
     EncodedInputs Encode(const std::string& premise, const std::string& hypothesis);
     TokenizerSpecialTokenIds GetSpecialTokenIds() const;
+    SessionBackend backend() const;
+    bool used_fallback() const;
     NliLogits PredictLogits(const std::string& premise, const std::string& hypothesis);
     NliScores Predict(const std::string& premise, const std::string& hypothesis);
 
@@ -71,6 +73,8 @@ private:
     std::vector<std::string> output_name_storage_;
     std::vector<const char*> output_names_;
     TokenizerAssetConfig tokenizer_config_;
+    SessionBackend backend_ = SessionBackend::kCPU;
+    bool used_fallback_ = false;
 };
 
 }  // namespace nli

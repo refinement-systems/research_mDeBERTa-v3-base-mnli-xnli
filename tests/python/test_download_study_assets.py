@@ -38,6 +38,9 @@ class DownloadStudyAssetsTest(unittest.TestCase):
 
         command = run_command.call_args.args[0]
         self.assertEqual(command[0], str(REPO_ROOT / "tools/download-mdeberta-v3-base.sh"))
+        self.assertIn("spm.model", command)
+        self.assertIn("onnx/model.onnx", command)
+        self.assertIn("onnx/model_quantized.onnx", command)
         self.assertIn("--tokenizer-assets", command)
         self.assertIn("--reference-weights", command)
         self.assertIn("--force", command)
@@ -57,6 +60,22 @@ class DownloadStudyAssetsTest(unittest.TestCase):
         self.assertIn("tools/download-nli-eval-slices.py", final_suite_command[1])
         self.assertIn("--mnli-per-label", final_suite_command)
         self.assertIn("--xnli-per-label", final_suite_command)
+
+    def test_download_datasets_copies_frozen_smoke_tsvs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            scratchpad_root = pathlib.Path(tmp_dir) / "scratchpad"
+            with mock.patch.object(download_study_assets, "run_command"):
+                download_study_assets.download_datasets(
+                    scratchpad_root=scratchpad_root,
+                    force=False,
+                )
+
+            dataset_root = scratchpad_root / "datasets"
+            for dataset_name in ("hf-probe-set.tsv", "hf-core-probe.tsv"):
+                copied = dataset_root / dataset_name
+                source = REPO_ROOT / "benchmarks" / "nli" / dataset_name
+                self.assertTrue(copied.is_file())
+                self.assertEqual(copied.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
 
     def test_main_creates_scratchpad_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
