@@ -25,6 +25,26 @@ class StudyCatalogTest(unittest.TestCase):
             ],
         )
 
+    def test_plan1_catalog_loads_expected_names(self) -> None:
+        entries = study_catalog.load_catalog(
+            pathlib.Path("research/attempt2_course-correction/study_quantization_catalog_plan1.json")
+        )
+        names = [entry["name"] for entry in entries]
+        self.assertEqual(
+            names,
+            [
+                "reference",
+                "model_quantized",
+                "nncf_accuracy_attention_only",
+                "nncf_fidelity_attention_proj_only",
+                "attention_only",
+                "nncf_fidelity_attention_only_n128_drop0p005",
+                "nncf_fidelity_attention_only_n128_drop0p002",
+                "nncf_fidelity_attention_only_n300_drop0p005",
+                "nncf_fidelity_attention_only_n300_drop0p002",
+            ],
+        )
+
     def test_duplicate_names_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = pathlib.Path(tmp_dir) / "catalog.json"
@@ -63,4 +83,3 @@ class StudyCatalogTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

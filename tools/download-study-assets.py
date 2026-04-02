@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 import subprocess
 import sys
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_SCRATCHPAD_ROOT = REPO_ROOT / "scratchpad"
+MODEL_FILE_ARGS = (
+    "spm.model",
+    "onnx/model.onnx",
+    "onnx/model_quantized.onnx",
+)
+SMOKE_DATASET_FILENAMES = (
+    "hf-probe-set.tsv",
+    "hf-core-probe.tsv",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +55,7 @@ def download_models(scratchpad_root: pathlib.Path, force: bool, with_hf_referenc
         str(REPO_ROOT / "tools/download-mdeberta-v3-base.sh"),
         "--dir",
         str(model_root),
+        *MODEL_FILE_ARGS,
         "--tokenizer-assets",
     ]
     if with_hf_reference_weights:
@@ -82,6 +93,16 @@ def download_datasets(scratchpad_root: pathlib.Path, force: bool) -> None:
         final_suite_command.append("--force")
     run_command(final_suite_command)
 
+    for dataset_name in SMOKE_DATASET_FILENAMES:
+        source_path = REPO_ROOT / "benchmarks" / "nli" / dataset_name
+        dest_path = dataset_root / dataset_name
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Frozen smoke dataset not found: {source_path}")
+        if dest_path.exists() and not force:
+            continue
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, dest_path)
+
 
 def main() -> int:
     args = parse_args()
@@ -105,4 +126,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)
-

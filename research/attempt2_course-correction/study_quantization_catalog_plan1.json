@@ -1,0 +1,200 @@
+[
+  {
+    "name": "reference",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu", "coreml"],
+    "notes": "Downloaded float reference model."
+  },
+  {
+    "name": "model_quantized",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/download-study-assets.py",
+      "--scratchpad-root=${SCRATCHPAD}",
+      "--skip-datasets"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model_quantized.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Downloaded vendor quantized ONNX model."
+  },
+  {
+    "name": "nncf_accuracy_attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=gold_accuracy",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=300",
+      "--max-drop=0.01",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/attempt1/nncf_accuracy_attention_only.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Current CPU middle-point winner from result0."
+  },
+  {
+    "name": "nncf_fidelity_attention_proj_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_proj_only",
+      "--subset-size=300",
+      "--max-drop=0.01",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Reproducibility check for the old fidelity-oriented attention-proj branch."
+  },
+  {
+    "name": "attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-model.py",
+      "--preset=single",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--op-type=MatMul",
+      "--ignore-family=attention_only"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/family_search/dynamic_qint8_matmul_attention_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "High-fidelity anchor from attempt0."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n128_drop0p005",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=128",
+      "--max-drop=0.005",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Plan1 fidelity-oriented NNCF candidate around attention_only."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n128_drop0p002",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=128",
+      "--max-drop=0.002",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n128_drop0p002.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Plan1 fidelity-oriented NNCF candidate around attention_only."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n300_drop0p005",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=300",
+      "--max-drop=0.005",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n300_drop0p005.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Plan1 fidelity-oriented NNCF candidate around attention_only."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n300_drop0p002",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/quantize-onnx-nncf.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--mode=accuracy-control",
+      "--metric=hf_agreement",
+      "--preset=mixed",
+      "--ignored-scope-family=attention_only",
+      "--subset-size=300",
+      "--max-drop=0.002",
+      "--preprocess",
+      "--fast-bias-correction",
+      "--calibration-tsv=${CALIBRATION_TSVS}",
+      "--validation-tsv=${VALIDATION_TSVS}"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n300_drop0p002.onnx",
+    "calibration_role": "calibration",
+    "validation_role": "fidelity_validation",
+    "allowed_backends": ["cpu"],
+    "notes": "Plan1 fidelity-oriented NNCF candidate around attention_only."
+  }
+]
