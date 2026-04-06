@@ -1,0 +1,170 @@
+[
+  {
+    "name": "reference",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/model.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Float CPU reference staged into the attempt4 scratchpad."
+  },
+  {
+    "name": "model_quantized",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/model_quantized.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model_quantized.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Vendor-provided quantized ONNX baseline."
+  },
+  {
+    "name": "dynamic_qint8_default",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/dynamic_qint8_default.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/ort/dynamic_qint8_default.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Dynamic ORT default anchor."
+  },
+  {
+    "name": "dynamic_qint8_per_channel",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/dynamic_qint8_per_channel.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/ort/dynamic_qint8_per_channel.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Dynamic ORT per-channel anchor."
+  },
+  {
+    "name": "attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/family_search/dynamic_qint8_matmul_attention_only.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/family_search/dynamic_qint8_matmul_attention_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "High-fidelity dynamic quantization anchor from attempt0."
+  },
+  {
+    "name": "nncf_accuracy_attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/nncf_accuracy_attention_only.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/logs/generation/nncf_accuracy_attention_only.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/nncf_accuracy_attention_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Current mixed-precision CPU recommendation candidate."
+  },
+  {
+    "name": "nncf_fidelity_attention_proj_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/logs/generation/nncf_fidelity_attention_proj_only.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Carry-forward fidelity-oriented NNCF baseline."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n128_drop0p005",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=scratchpad/plan1/candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/plan1/logs/generation/nncf_fidelity_attention_only_n128_drop0p005.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Carry-forward plan1 attention-only NNCF refinement."
+  },
+  {
+    "name": "static_attention_only_u8u8_minmax_n128",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/static_attention_only_u8u8_minmax_n128.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/static_attention_only_u8u8_minmax_n128.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Best attempt1 static U8U8 accuracy-oriented survivor."
+  },
+  {
+    "name": "static_attention_proj_only_s8s8_minmax_n300",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/static_attention_proj_only_s8s8_minmax_n300.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/static_attention_proj_only_s8s8_minmax_n300.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Best attempt1 static S8S8 fidelity-oriented survivor."
+  },
+  {
+    "name": "static_attention_proj_only_u8s8_rr_minmax_n128",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/static_attention_proj_only_u8s8_rr_minmax_n128.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/static_attention_proj_only_u8s8_rr_minmax_n128.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["cpu"],
+    "notes": "Reduced-range static ORT control carried forward from attempt1."
+  }
+]

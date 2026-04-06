@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import pathlib
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -22,12 +23,18 @@ class SummaryRow:
     backend: str
     quantization: str
     artifact_path: str
+    stdout_log_path: str
     size_bytes: int
     example_count: int
+    labeled_example_count: int
+    correct_prediction_count: int
+    gold_accuracy: float | None
     float_label_agreement: float
     mean_abs_logit_delta: float
     max_abs_logit_delta: float
     disagreement_count: int
+    smooth_quant_disabled: bool | None
+    retry_reason: str
     pareto_frontier: bool
 
 
@@ -60,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         dest="roles",
         action="append",
         default=[],
-        choices=["calibration", "fidelity_validation", "fidelity_test", "smoke"],
+        choices=["calibration", "fidelity_validation", "fidelity_test", "stress_test", "smoke"],
         help="Dataset role to summarize. Repeat to add more. Defaults to fidelity_validation only.",
     )
     parser.add_argument(
@@ -158,17 +165,20 @@ def fetch_candidate_rows(
         SELECT
             q.name AS quantization_name,
             a.path AS artifact_path,
+            a.stdout_log_path AS stdout_log_path,
             COALESCE(a.size_bytes, 0) AS size_bytes,
             e.dataset_row_id,
             e.entailment_logit,
             e.neutral_logit,
             e.contradiction_logit,
-            e.predicted_label
+            e.predicted_label,
+            dr.label AS gold_label
         FROM evaluation e
         JOIN evaluation_run er ON er.id = e.evaluation_run_id
         JOIN artifact a ON a.id = er.artifact_id
         JOIN quantization q ON q.id = a.quantization_id
         JOIN backend b ON b.id = er.backend_id
+        JOIN dataset_row dr ON dr.id = e.dataset_row_id
         WHERE er.dataset_id = ?
           AND LOWER(b.name) = ?
         ORDER BY q.name, e.dataset_row_id
@@ -177,9 +187,9 @@ def fetch_candidate_rows(
 
 
 def compute_frontier_flags(rows: list[SummaryRow]) -> dict[tuple[str, str, str, str], bool]:
-    grouped: dict[tuple[str, str], list[SummaryRow]] = {}
+    grouped: dict[tuple[str, str, str], list[SummaryRow]] = {}
     for row in rows:
-        grouped.setdefault((row.dataset, row.backend), []).append(row)
+        grouped.setdefault((row.dataset, row.role, row.backend), []).append(row)
 
     flags: dict[tuple[str, str, str, str], bool] = {}
     for key, bucket in grouped.items():
@@ -202,6 +212,63 @@ def compute_frontier_flags(rows: list[SummaryRow]) -> dict[tuple[str, str, str, 
     return flags
 
 
+def is_hans_dataset(dataset_name: str) -> bool:
+    return "hans" in dataset_name.lower()
+
+
+def collapse_hans_label(label: str) -> str:
+    normalized = label.strip().lower()
+    if normalized == "entailment":
+        return "entailment"
+    return "non-entailment"
+
+
+def gold_label_match(dataset_name: str, gold_label: str, predicted_label: str) -> bool:
+    if is_hans_dataset(dataset_name):
+        return collapse_hans_label(gold_label) == collapse_hans_label(predicted_label)
+    return gold_label == predicted_label
+
+
+def parse_generation_metadata(stdout_log_path: str) -> tuple[bool | None, str]:
+    if not stdout_log_path:
+        return None, ""
+
+    path = pathlib.Path(stdout_log_path)
+    if not path.is_file():
+        return None, ""
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    smooth_quant_disabled: bool | None = None
+    retry_reason = ""
+
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if not stripped or not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            if "smooth_quant_disabled" in payload:
+                value = payload["smooth_quant_disabled"]
+                smooth_quant_disabled = None if value is None else bool(value)
+            if "retry_reason" in payload and payload["retry_reason"] is not None:
+                retry_reason = str(payload["retry_reason"])
+            return smooth_quant_disabled, retry_reason
+
+    match = re.search(r"smooth_quant_disabled=(True|False)", text)
+    if match:
+        smooth_quant_disabled = match.group(1) == "True"
+
+    for line in text.splitlines():
+        if line.startswith("  retry_reason: "):
+            retry_reason = line.split(": ", 1)[1].strip()
+            break
+
+    return smooth_quant_disabled, retry_reason
+
+
 def summarize_dataset_backend(
     conn: sqlite3.Connection,
     dataset_name: str,
@@ -220,8 +287,11 @@ def summarize_dataset_backend(
             quantization_name,
             {
                 "artifact_path": str(row["artifact_path"]),
+                "stdout_log_path": str(row["stdout_log_path"]),
                 "size_bytes": int(row["size_bytes"]),
                 "examples": 0,
+                "labeled_examples": 0,
+                "correct_predictions": 0,
                 "agreements": 0,
                 "abs_delta_sum": 0.0,
                 "abs_delta_count": 0,
@@ -246,6 +316,12 @@ def summarize_dataset_backend(
         else:
             candidate["disagreements"] += 1
 
+        gold_label = str(row["gold_label"] or "").strip()
+        if gold_label:
+            candidate["labeled_examples"] += 1
+            if gold_label_match(dataset_name, gold_label, str(row["predicted_label"])):
+                candidate["correct_predictions"] += 1
+
         deltas = [abs(left - right) for left, right in zip(cand_logits, ref_logits)]
         candidate["abs_delta_sum"] += sum(deltas)
         candidate["abs_delta_count"] += len(deltas)
@@ -257,6 +333,9 @@ def summarize_dataset_backend(
         if example_count == 0:
             continue
         abs_delta_count = int(item["abs_delta_count"])
+        labeled_example_count = int(item["labeled_examples"])
+        correct_prediction_count = int(item["correct_predictions"])
+        smooth_quant_disabled, retry_reason = parse_generation_metadata(str(item["stdout_log_path"]))
         summary_rows.append(
             SummaryRow(
                 dataset=dataset_name,
@@ -264,12 +343,22 @@ def summarize_dataset_backend(
                 backend=backend_name,
                 quantization=quantization_name,
                 artifact_path=str(item["artifact_path"]),
+                stdout_log_path=str(item["stdout_log_path"]),
                 size_bytes=int(item["size_bytes"]),
                 example_count=example_count,
+                labeled_example_count=labeled_example_count,
+                correct_prediction_count=correct_prediction_count,
+                gold_accuracy=(
+                    float(correct_prediction_count) / float(labeled_example_count)
+                    if labeled_example_count
+                    else None
+                ),
                 float_label_agreement=float(item["agreements"]) / float(example_count),
                 mean_abs_logit_delta=float(item["abs_delta_sum"]) / float(abs_delta_count),
                 max_abs_logit_delta=float(item["max_abs_delta"]),
                 disagreement_count=int(item["disagreements"]),
+                smooth_quant_disabled=smooth_quant_disabled,
+                retry_reason=retry_reason,
                 pareto_frontier=False,
             )
         )
@@ -286,12 +375,18 @@ def write_outputs(rows: list[SummaryRow], output_prefix: pathlib.Path) -> None:
             backend=row.backend,
             quantization=row.quantization,
             artifact_path=row.artifact_path,
+            stdout_log_path=row.stdout_log_path,
             size_bytes=row.size_bytes,
             example_count=row.example_count,
+            labeled_example_count=row.labeled_example_count,
+            correct_prediction_count=row.correct_prediction_count,
+            gold_accuracy=row.gold_accuracy,
             float_label_agreement=row.float_label_agreement,
             mean_abs_logit_delta=row.mean_abs_logit_delta,
             max_abs_logit_delta=row.max_abs_logit_delta,
             disagreement_count=row.disagreement_count,
+            smooth_quant_disabled=row.smooth_quant_disabled,
+            retry_reason=row.retry_reason,
             pareto_frontier=flags[(row.dataset, row.role, row.backend, row.quantization)],
         )
         for row in rows
@@ -307,12 +402,18 @@ def write_outputs(rows: list[SummaryRow], output_prefix: pathlib.Path) -> None:
                 "backend",
                 "quantization",
                 "artifact_path",
+                "stdout_log_path",
                 "size_bytes",
                 "example_count",
+                "labeled_example_count",
+                "correct_prediction_count",
+                "gold_accuracy",
                 "float_label_agreement",
                 "mean_abs_logit_delta",
                 "max_abs_logit_delta",
                 "disagreement_count",
+                "smooth_quant_disabled",
+                "retry_reason",
                 "pareto_frontier",
             ],
         )
@@ -367,4 +468,3 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1)
-

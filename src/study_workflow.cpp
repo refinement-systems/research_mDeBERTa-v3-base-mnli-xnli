@@ -286,11 +286,18 @@ std::string ClassifyDatasetRole(const std::string& dataset_name) {
     if (dataset_name == "hf-probe-set.tsv" || dataset_name == "hf-core-probe.tsv") {
         return "smoke";
     }
+    if (dataset_name.find("stress-test") != std::string::npos) {
+        return "stress_test";
+    }
     if (dataset_name.find("calibration") != std::string::npos) {
         return "calibration";
     }
+    if (dataset_name.find("attempt4-dev") != std::string::npos) {
+        return "fidelity_validation";
+    }
     if (dataset_name.find("validation_matched") != std::string::npos ||
         dataset_name.find("validation_mismatched") != std::string::npos ||
+        dataset_name.find("attempt4-test") != std::string::npos ||
         dataset_name.find("-test-") != std::string::npos) {
         return "fidelity_test";
     }

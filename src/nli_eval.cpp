@@ -49,13 +49,6 @@ std::optional<size_t> FindColumnIndex(
     return it->second;
 }
 
-bool IsKnownNliLabel(std::string_view label) {
-    return std::find(
-               nli::kNliScoreLabels.begin(),
-               nli::kNliScoreLabels.end(),
-               label) != nli::kNliScoreLabels.end();
-}
-
 }  // namespace
 
 namespace nli {
@@ -124,11 +117,6 @@ std::vector<NliEvalExample> ReadNliEvalExamples(const std::string& path) {
         example.hypothesis = fields[*hypothesis_index];
 
         if (label_index && !fields[*label_index].empty()) {
-            if (!IsKnownNliLabel(fields[*label_index])) {
-                throw std::runtime_error(
-                    "NLI eval row " + std::to_string(line_number) +
-                    " has unsupported label '" + fields[*label_index] + "'");
-            }
             example.label = fields[*label_index];
         }
 
