@@ -66,11 +66,11 @@ The `attention_only` fidelity-oriented refinement batch was pruned by what this 
 
 Primary report artifacts:
 
-- [validation-summary.json](/Users/mjm/repo/nli/scratchpad/plan1/reports/validation-summary.json)
-- [validation-frontier-aggregated.json](/Users/mjm/repo/nli/scratchpad/plan1/reports/validation-frontier-aggregated.json)
-- [test-summary.json](/Users/mjm/repo/nli/scratchpad/plan1/reports/test-summary.json)
-- [test-frontier-aggregated.json](/Users/mjm/repo/nli/scratchpad/plan1/reports/test-frontier-aggregated.json)
+- [validation-summary.json](scratchpad/plan1/reports/validation-summary.json)
+- [validation-frontier-aggregated.json](scratchpad/plan1/reports/validation-frontier-aggregated.json)
+- [test-summary.json](scratchpad/plan1/reports/test-summary.json)
+- [test-frontier-aggregated.json](scratchpad/plan1/reports/test-frontier-aggregated.json)
 
 Supporting artifact:
 
-- [nncf_fidelity_attention_only_n128_drop0p005.onnx](/Users/mjm/repo/nli/scratchpad/plan1/candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx)
+- [nncf_fidelity_attention_only_n128_drop0p005.onnx](scratchpad/plan1/candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx)

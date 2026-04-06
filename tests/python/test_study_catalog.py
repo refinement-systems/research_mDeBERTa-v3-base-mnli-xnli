@@ -64,6 +64,28 @@ class StudyCatalogTest(unittest.TestCase):
             by_name["reference_fp16"]["generator_args_json"],
         )
 
+    def test_attempt4_catalog_loads_bounded_cpu_names(self) -> None:
+        entries = study_catalog.load_catalog(
+            pathlib.Path("research/attempt4_cpu-focus/study_quantization_catalog.json")
+        )
+        names = [entry["name"] for entry in entries]
+        self.assertEqual(
+            names,
+            [
+                "reference",
+                "model_quantized",
+                "dynamic_qint8_default",
+                "dynamic_qint8_per_channel",
+                "attention_only",
+                "nncf_accuracy_attention_only",
+                "nncf_fidelity_attention_proj_only",
+                "nncf_fidelity_attention_only_n128_drop0p005",
+                "static_attention_only_u8u8_minmax_n128",
+                "static_attention_proj_only_s8s8_minmax_n300",
+                "static_attention_proj_only_u8s8_rr_minmax_n128",
+            ],
+        )
+
     def test_duplicate_names_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = pathlib.Path(tmp_dir) / "catalog.json"
