@@ -1,0 +1,81 @@
+[
+  {
+    "name": "reference",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/model.onnx",
+      "--dest=${DEST}"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "models/mdeberta/onnx/model.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Float ONNX reference staged into the attempt5 CoreML scratchpad."
+  },
+  {
+    "name": "reference_fp16",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/convert-onnx-to-fp16.py",
+      "--src=${SRC}",
+      "--dest=${DEST}",
+      "--install-deps"
+    ],
+    "source_artifact_name": "reference",
+    "output_relpath": "candidates/reference_fp16.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "FP16-converted ONNX copy of the float reference. Primary CoreML target."
+  },
+  {
+    "name": "nncf_accuracy_attention_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/nncf_accuracy_attention_only.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/logs/generation/nncf_accuracy_attention_only.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/nncf_accuracy_attention_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Closed CPU winner carried forward as a CoreML control."
+  },
+  {
+    "name": "nncf_fidelity_attention_only_n128_drop0p005",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=scratchpad/plan1/candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/plan1/logs/generation/nncf_fidelity_attention_only_n128_drop0p005.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/plan1/nncf_fidelity_attention_only_n128_drop0p005.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Equal-size locked CPU alternative carried forward as a CoreML control."
+  },
+  {
+    "name": "nncf_fidelity_attention_proj_only",
+    "generator_program": "python3",
+    "generator_args_json": [
+      "tools/stage-study-artifact.py",
+      "--src=models/mdeberta/onnx/candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+      "--dest=${DEST}",
+      "--source-stdout-log=scratchpad/logs/generation/nncf_fidelity_attention_proj_only.stdout.log"
+    ],
+    "source_artifact_name": null,
+    "output_relpath": "candidates/attempt1/nncf_fidelity_attention_proj_only.onnx",
+    "calibration_role": null,
+    "validation_role": null,
+    "allowed_backends": ["coreml"],
+    "notes": "Slightly larger but slightly more faithful locked CPU alternative carried forward as a CoreML control."
+  }
+]
