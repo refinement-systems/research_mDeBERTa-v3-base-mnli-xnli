@@ -86,6 +86,20 @@ class StudyCatalogTest(unittest.TestCase):
             ],
         )
 
+    def test_attempt5_catalog_loads_expected_coreml_names(self) -> None:
+        entries = study_catalog.load_catalog(
+            pathlib.Path("research/attempt5_coreml-focus/study_quantization_catalog.json")
+        )
+        names = [entry["name"] for entry in entries]
+        self.assertEqual(
+            names,
+            [
+                "reference",
+                "reference_fp16",
+                "nncf_accuracy_attention_only",
+            ],
+        )
+
     def test_duplicate_names_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = pathlib.Path(tmp_dir) / "catalog.json"

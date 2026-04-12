@@ -24,8 +24,6 @@ PRIMARY_QUANTIZATIONS = (
 )
 CONTROL_QUANTIZATIONS = (
     "nncf_accuracy_attention_only",
-    "nncf_fidelity_attention_only_n128_drop0p005",
-    "nncf_fidelity_attention_proj_only",
 )
 TOKENIZER_ASSET_FILENAMES = (
     "spm.model",
@@ -42,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Run the attempt5 CoreML-focused study outside the sandbox: reuse the "
             "attempt4 evaluation pack, validate the CoreML float reference, test fp16 "
-            "as the primary CoreML target, and benchmark any surviving carry-forward controls."
+            "as the primary CoreML target, and benchmark the single carry-forward CPU winner."
         )
     )
     parser.add_argument(
@@ -79,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-controls",
         action="store_true",
-        help="Run only the CoreML float reference and fp16 candidate.",
+        help="Run only the CoreML float reference and fp16 candidate, without the CPU-winning control.",
     )
     parser.add_argument("--skip-test", action="store_true")
     return parser.parse_args()
@@ -384,7 +382,7 @@ def main() -> int:
             run_study(study_binary, scratchpad_root, quantization, dataset_name)
 
     if control_quantizations:
-        print("Running carry-forward CoreML controls.")
+        print("Running the carry-forward CoreML control.")
         for quantization in control_quantizations:
             failed = False
             for dataset_name in [*dataset_manifest["smoke_datasets"], *dataset_manifest["validation_datasets"]]:
