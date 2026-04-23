@@ -201,6 +201,28 @@ class QuantizationRecord:
     stderr_log_path: pathlib.Path
 
 
+@dataclass(frozen=True)
+class SummaryRow:
+    dataset: str
+    role: str
+    backend: str
+    quantization: str
+    artifact_path: str
+    stdout_log_path: str
+    size_bytes: int
+    example_count: int
+    labeled_example_count: int
+    correct_prediction_count: int
+    gold_accuracy: float | None
+    float_label_agreement: float
+    mean_abs_logit_delta: float
+    max_abs_logit_delta: float
+    disagreement_count: int
+    smooth_quant_disabled: bool | None
+    retry_reason: str
+    pareto_frontier: bool
+
+
 class DatasetsServerClient:
     def __init__(
         self,
@@ -454,6 +476,1065 @@ def write_benchmark_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> No
                     "time_l_peak_rss_p95_bytes": row["time_l_peak_rss_bytes"]["p95"],
                 }
             )
+
+
+def fetch_dataset_rows(
+    connection: sqlite3.Connection,
+    dataset_names: list[str],
+    roles: list[str],
+) -> list[dict[str, object]]:
+    where: list[str] = []
+    params: list[object] = []
+    if dataset_names:
+        where.append("d.name IN ({})".format(",".join("?" for _ in dataset_names)))
+        params.extend(dataset_names)
+    if roles:
+        where.append("d.role IN ({})".format(",".join("?" for _ in roles)))
+        params.extend(roles)
+
+    query = """
+        SELECT
+            d.id AS dataset_id,
+            d.name AS dataset_name,
+            d.role AS dataset_role
+        FROM dataset d
+    """
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " ORDER BY d.name"
+    return [dict(row) for row in connection.execute(query, params)]
+
+
+def fetch_backend_names(
+    connection: sqlite3.Connection,
+    requested_backends: list[str],
+) -> list[str]:
+    query = "SELECT LOWER(name) AS name FROM backend"
+    rows = [str(row["name"]) for row in connection.execute(query)]
+    if requested_backends:
+        requested = set(requested_backends)
+        return [name for name in rows if name in requested]
+    return rows
+
+
+def fetch_reference_rows(
+    connection: sqlite3.Connection,
+    dataset_id: int,
+    backend_name: str,
+) -> dict[int, tuple[float, float, float, str]]:
+    query = """
+        SELECT
+            e.dataset_row_id,
+            e.entailment_logit,
+            e.neutral_logit,
+            e.contradiction_logit,
+            e.predicted_label
+        FROM evaluation e
+        JOIN evaluation_run er ON er.id = e.evaluation_run_id
+        JOIN artifact a ON a.id = er.artifact_id
+        JOIN quantization q ON q.id = a.quantization_id
+        JOIN backend b ON b.id = er.backend_id
+        WHERE q.name = 'reference'
+          AND er.dataset_id = ?
+          AND LOWER(b.name) = ?
+    """
+    rows: dict[int, tuple[float, float, float, str]] = {}
+    for row in connection.execute(query, (dataset_id, backend_name)):
+        rows[int(row["dataset_row_id"])] = (
+            float(row["entailment_logit"]),
+            float(row["neutral_logit"]),
+            float(row["contradiction_logit"]),
+            str(row["predicted_label"]),
+        )
+    return rows
+
+
+def fetch_candidate_rows(
+    connection: sqlite3.Connection,
+    dataset_id: int,
+    backend_name: str,
+) -> list[dict[str, object]]:
+    query = """
+        SELECT
+            q.name AS quantization_name,
+            a.path AS artifact_path,
+            a.stdout_log_path AS stdout_log_path,
+            COALESCE(a.size_bytes, 0) AS size_bytes,
+            e.dataset_row_id,
+            e.entailment_logit,
+            e.neutral_logit,
+            e.contradiction_logit,
+            e.predicted_label,
+            dr.label AS gold_label
+        FROM evaluation e
+        JOIN evaluation_run er ON er.id = e.evaluation_run_id
+        JOIN artifact a ON a.id = er.artifact_id
+        JOIN quantization q ON q.id = a.quantization_id
+        JOIN backend b ON b.id = er.backend_id
+        JOIN dataset_row dr ON dr.id = e.dataset_row_id
+        WHERE er.dataset_id = ?
+          AND LOWER(b.name) = ?
+        ORDER BY q.name, e.dataset_row_id
+    """
+    return [dict(row) for row in connection.execute(query, (dataset_id, backend_name))]
+
+
+def compute_frontier_flags(rows: list[SummaryRow]) -> dict[tuple[str, str, str, str], bool]:
+    grouped: dict[tuple[str, str, str], list[SummaryRow]] = {}
+    for row in rows:
+        grouped.setdefault((row.dataset, row.role, row.backend), []).append(row)
+
+    flags: dict[tuple[str, str, str, str], bool] = {}
+    for bucket in grouped.values():
+        for row in bucket:
+            dominated = False
+            for other in bucket:
+                if other.quantization == row.quantization:
+                    continue
+                if (
+                    other.size_bytes <= row.size_bytes
+                    and other.float_label_agreement >= row.float_label_agreement
+                    and (
+                        other.size_bytes < row.size_bytes
+                        or other.float_label_agreement > row.float_label_agreement
+                    )
+                ):
+                    dominated = True
+                    break
+            flags[(row.dataset, row.role, row.backend, row.quantization)] = not dominated
+    return flags
+
+
+def is_hans_dataset(dataset_name: str) -> bool:
+    return "hans" in dataset_name.lower()
+
+
+def collapse_hans_label(label: str) -> str:
+    normalized = label.strip().lower()
+    if normalized == "entailment":
+        return "entailment"
+    return "non-entailment"
+
+
+def gold_label_match(dataset_name: str, gold_label: str, predicted_label: str) -> bool:
+    if is_hans_dataset(dataset_name):
+        return collapse_hans_label(gold_label) == collapse_hans_label(predicted_label)
+    return gold_label == predicted_label
+
+
+def summarize_dataset_backend(
+    connection: sqlite3.Connection,
+    dataset_name: str,
+    dataset_role: str,
+    dataset_id: int,
+    backend_name: str,
+) -> list[SummaryRow]:
+    reference_rows = fetch_reference_rows(connection, dataset_id, backend_name)
+    if not reference_rows:
+        return []
+
+    per_quantization: dict[str, dict[str, object]] = {}
+    for row in fetch_candidate_rows(connection, dataset_id, backend_name):
+        quantization_name = str(row["quantization_name"])
+        candidate = per_quantization.setdefault(
+            quantization_name,
+            {
+                "artifact_path": str(row["artifact_path"]),
+                "stdout_log_path": str(row["stdout_log_path"]),
+                "size_bytes": int(row["size_bytes"]),
+                "examples": 0,
+                "labeled_examples": 0,
+                "correct_predictions": 0,
+                "agreements": 0,
+                "abs_delta_sum": 0.0,
+                "abs_delta_count": 0,
+                "max_abs_delta": 0.0,
+                "disagreements": 0,
+            },
+        )
+        dataset_row_id = int(row["dataset_row_id"])
+        if dataset_row_id not in reference_rows:
+            continue
+
+        ref_entailment, ref_neutral, ref_contradiction, ref_label = reference_rows[dataset_row_id]
+        cand_logits = (
+            float(row["entailment_logit"]),
+            float(row["neutral_logit"]),
+            float(row["contradiction_logit"]),
+        )
+        ref_logits = (ref_entailment, ref_neutral, ref_contradiction)
+        candidate["examples"] += 1
+        if str(row["predicted_label"]) == ref_label:
+            candidate["agreements"] += 1
+        else:
+            candidate["disagreements"] += 1
+
+        gold_label = str(row["gold_label"] or "").strip()
+        if gold_label:
+            candidate["labeled_examples"] += 1
+            if gold_label_match(dataset_name, gold_label, str(row["predicted_label"])):
+                candidate["correct_predictions"] += 1
+
+        deltas = [abs(left - right) for left, right in zip(cand_logits, ref_logits)]
+        candidate["abs_delta_sum"] += sum(deltas)
+        candidate["abs_delta_count"] += len(deltas)
+        candidate["max_abs_delta"] = max(float(candidate["max_abs_delta"]), max(deltas))
+
+    summary_rows: list[SummaryRow] = []
+    for quantization_name, item in sorted(per_quantization.items()):
+        example_count = int(item["examples"])
+        if example_count == 0:
+            continue
+        labeled_example_count = int(item["labeled_examples"])
+        correct_prediction_count = int(item["correct_predictions"])
+        smooth_quant_disabled, retry_reason = parse_generation_metadata(pathlib.Path(str(item["stdout_log_path"])))
+        summary_rows.append(
+            SummaryRow(
+                dataset=dataset_name,
+                role=dataset_role,
+                backend=backend_name,
+                quantization=quantization_name,
+                artifact_path=str(item["artifact_path"]),
+                stdout_log_path=str(item["stdout_log_path"]),
+                size_bytes=int(item["size_bytes"]),
+                example_count=example_count,
+                labeled_example_count=labeled_example_count,
+                correct_prediction_count=correct_prediction_count,
+                gold_accuracy=(
+                    float(correct_prediction_count) / float(labeled_example_count)
+                    if labeled_example_count
+                    else None
+                ),
+                float_label_agreement=float(item["agreements"]) / float(example_count),
+                mean_abs_logit_delta=float(item["abs_delta_sum"]) / float(int(item["abs_delta_count"])),
+                max_abs_logit_delta=float(item["max_abs_delta"]),
+                disagreement_count=int(item["disagreements"]),
+                smooth_quant_disabled=smooth_quant_disabled,
+                retry_reason=retry_reason,
+                pareto_frontier=False,
+            )
+        )
+    return summary_rows
+
+
+def summary_rows_with_frontier(rows: list[SummaryRow]) -> list[SummaryRow]:
+    flags = compute_frontier_flags(rows)
+    return [
+        SummaryRow(
+            dataset=row.dataset,
+            role=row.role,
+            backend=row.backend,
+            quantization=row.quantization,
+            artifact_path=row.artifact_path,
+            stdout_log_path=row.stdout_log_path,
+            size_bytes=row.size_bytes,
+            example_count=row.example_count,
+            labeled_example_count=row.labeled_example_count,
+            correct_prediction_count=row.correct_prediction_count,
+            gold_accuracy=row.gold_accuracy,
+            float_label_agreement=row.float_label_agreement,
+            mean_abs_logit_delta=row.mean_abs_logit_delta,
+            max_abs_logit_delta=row.max_abs_logit_delta,
+            disagreement_count=row.disagreement_count,
+            smooth_quant_disabled=row.smooth_quant_disabled,
+            retry_reason=row.retry_reason,
+            pareto_frontier=flags[(row.dataset, row.role, row.backend, row.quantization)],
+        )
+        for row in rows
+    ]
+
+
+def summary_csv_fieldnames() -> list[str]:
+    return [
+        "dataset",
+        "role",
+        "backend",
+        "quantization",
+        "artifact_path",
+        "stdout_log_path",
+        "size_bytes",
+        "example_count",
+        "labeled_example_count",
+        "correct_prediction_count",
+        "gold_accuracy",
+        "float_label_agreement",
+        "mean_abs_logit_delta",
+        "max_abs_logit_delta",
+        "disagreement_count",
+        "smooth_quant_disabled",
+        "retry_reason",
+        "pareto_frontier",
+    ]
+
+
+def write_summary_outputs(rows: list[SummaryRow], output_prefix: pathlib.Path | str) -> tuple[pathlib.Path, pathlib.Path]:
+    prefix = resolve_absolute_path(output_prefix)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    finalized_rows = summary_rows_with_frontier(rows)
+
+    csv_path = prefix.with_suffix(".csv")
+    with csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=summary_csv_fieldnames())
+        writer.writeheader()
+        for row in finalized_rows:
+            writer.writerow(row.__dict__)
+
+    json_path = prefix.with_suffix(".json")
+    write_json(json_path, {"rows": [row.__dict__ for row in finalized_rows]})
+    return csv_path, json_path
+
+
+def summarize_study_db_to_prefix(
+    scratchpad_root: pathlib.Path | str,
+    *,
+    db_path: pathlib.Path | str | None = None,
+    dataset_names: list[str] | None = None,
+    roles: list[str] | None = None,
+    backends: list[str] | None = None,
+    output_prefix: pathlib.Path | str,
+) -> list[SummaryRow]:
+    scratchpad = resolve_absolute_path(scratchpad_root)
+    resolved_db_path = resolve_absolute_path(db_path) if db_path else scratchpad / "db.sqlite3"
+    connection = sqlite3.connect(str(resolved_db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        selected_roles = roles or ["fidelity_validation"]
+        datasets = fetch_dataset_rows(connection, dataset_names or [], selected_roles)
+        backend_names = fetch_backend_names(connection, backends or [])
+
+        summary_rows: list[SummaryRow] = []
+        for dataset in datasets:
+            for backend_name in backend_names:
+                summary_rows.extend(
+                    summarize_dataset_backend(
+                        connection,
+                        dataset_name=str(dataset["dataset_name"]),
+                        dataset_role=str(dataset["dataset_role"]),
+                        dataset_id=int(dataset["dataset_id"]),
+                        backend_name=backend_name,
+                    )
+                )
+    finally:
+        connection.close()
+
+    write_summary_outputs(summary_rows, output_prefix)
+    return summary_rows
+
+
+def read_json(path: pathlib.Path | str) -> Any:
+    resolved = resolve_absolute_path(path)
+    return json.loads(resolved.read_text(encoding="utf-8"))
+
+
+def read_summary_rows(path: pathlib.Path | str) -> list[dict[str, Any]]:
+    payload = read_json(path)
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"Summary JSON does not contain a row list: {path}")
+    return [dict(row) for row in rows]
+
+
+def read_benchmark_rows(path: pathlib.Path | str) -> dict[str, dict[str, str]]:
+    resolved = resolve_absolute_path(path)
+    with resolved.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        return {str(row["candidate"]): dict(row) for row in reader}
+
+
+def optional_float(mapping: dict[str, Any], key: str) -> float | None:
+    value = mapping.get(key, "")
+    if value in ("", None):
+        return None
+    return float(value)
+
+
+def percent_text(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{100.0 * float(value):.2f}%"
+
+
+def ms_text(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value):.3f} ms"
+
+
+def mib_text(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value) / (1024.0 * 1024.0):.1f} MiB"
+
+
+def lower_name(value: str) -> str:
+    return value.lower()
+
+
+def is_mnli_dataset(name: str) -> bool:
+    return lower_name(name).startswith("mnli-")
+
+
+def is_anli_dev_dataset(name: str) -> bool:
+    lowered = lower_name(name)
+    return lowered.startswith("anli-") and "-dev-" in lowered
+
+
+def is_anli_test_dataset(name: str) -> bool:
+    lowered = lower_name(name)
+    return lowered.startswith("anli-") and "-test-" in lowered
+
+
+def is_xnli_dataset(name: str) -> bool:
+    return lower_name(name).startswith("xnli-")
+
+
+def xnli_language(name: str) -> str | None:
+    if not is_xnli_dataset(name):
+        return None
+    parts = name.split("-")
+    if len(parts) < 2:
+        return None
+    return parts[1]
+
+
+def aggregate_required_rows(
+    rows: list[dict[str, Any]],
+    required_datasets: list[str],
+) -> dict[str, dict[str, Any]]:
+    required_dataset_set = set(required_datasets)
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        dataset = str(row["dataset"])
+        if dataset not in required_dataset_set:
+            continue
+        quantization = str(row["quantization"])
+        item = grouped.setdefault(
+            quantization,
+            {
+                "quantization": quantization,
+                "artifact_path": row["artifact_path"],
+                "size_bytes": int(row["size_bytes"]),
+                "smooth_quant_disabled": row.get("smooth_quant_disabled"),
+                "retry_reason": row.get("retry_reason", ""),
+                "datasets": {},
+                "example_count": 0,
+                "labeled_example_count": 0,
+                "correct_prediction_count": 0,
+                "disagreement_count": 0,
+                "max_abs_logit_delta": 0.0,
+                "_weighted_mean_sum": 0.0,
+            },
+        )
+        item["datasets"][dataset] = row
+        item["example_count"] += int(row["example_count"])
+        item["labeled_example_count"] += int(row.get("labeled_example_count", 0))
+        item["correct_prediction_count"] += int(row.get("correct_prediction_count", 0))
+        item["disagreement_count"] += int(row["disagreement_count"])
+        item["max_abs_logit_delta"] = max(
+            float(item["max_abs_logit_delta"]),
+            float(row["max_abs_logit_delta"]),
+        )
+        item["_weighted_mean_sum"] += float(row["mean_abs_logit_delta"]) * int(row["example_count"])
+
+    aggregated: dict[str, dict[str, Any]] = {}
+    for quantization, item in grouped.items():
+        present_dataset_set = set(item["datasets"].keys())
+        complete = present_dataset_set == required_dataset_set
+        example_count = int(item["example_count"])
+        labeled_example_count = int(item["labeled_example_count"])
+        aggregated[quantization] = {
+            "quantization": quantization,
+            "artifact_path": item["artifact_path"],
+            "size_bytes": int(item["size_bytes"]),
+            "smooth_quant_disabled": item["smooth_quant_disabled"],
+            "retry_reason": item["retry_reason"],
+            "complete": complete,
+            "dataset_names": sorted(present_dataset_set),
+            "datasets": item["datasets"],
+            "example_count": example_count,
+            "labeled_example_count": labeled_example_count,
+            "correct_prediction_count": int(item["correct_prediction_count"]),
+            "gold_accuracy": (
+                float(item["correct_prediction_count"]) / float(labeled_example_count)
+                if labeled_example_count
+                else None
+            ),
+            "float_label_agreement": (
+                float(example_count - int(item["disagreement_count"])) / float(example_count)
+                if example_count
+                else None
+            ),
+            "mean_abs_logit_delta": (
+                float(item["_weighted_mean_sum"]) / float(example_count)
+                if example_count
+                else None
+            ),
+            "max_abs_logit_delta": float(item["max_abs_logit_delta"]),
+            "disagreement_count": int(item["disagreement_count"]),
+        }
+    return aggregated
+
+
+def average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return sum(values) / float(len(values))
+
+
+def validation_gate(
+    quantization: str,
+    aggregated_validation: dict[str, dict[str, Any]],
+    runtime_rows: dict[str, dict[str, str]],
+) -> tuple[bool, list[str], dict[str, float | None]]:
+    candidate = aggregated_validation[quantization]
+    reference = aggregated_validation.get("reference")
+    reasons: list[str] = []
+    metrics: dict[str, float | None] = {
+        "mnli_macro_accuracy": None,
+        "mnli_macro_accuracy_drop": None,
+        "anli_macro_accuracy": None,
+        "anli_macro_accuracy_drop": None,
+        "validation_float_label_agreement": candidate["float_label_agreement"],
+        "peak_rss_ratio_vs_reference": None,
+    }
+
+    if not candidate["complete"]:
+        reasons.append("missing validation datasets")
+        return False, reasons, metrics
+    if reference is None or not reference["complete"]:
+        reasons.append("reference validation summary is incomplete")
+        return False, reasons, metrics
+
+    candidate_runtime = runtime_rows.get(quantization)
+    reference_runtime = runtime_rows.get("reference")
+    if candidate_runtime is None:
+        reasons.append("missing CPU persistent benchmark row")
+    if reference_runtime is None:
+        reasons.append("missing reference CPU persistent benchmark row")
+
+    candidate_dataset_rows = candidate["datasets"]
+    reference_dataset_rows = reference["datasets"]
+
+    candidate_mnli_values = [
+        float(row["gold_accuracy"])
+        for dataset_name, row in candidate_dataset_rows.items()
+        if is_mnli_dataset(dataset_name) and row.get("gold_accuracy") is not None
+    ]
+    reference_mnli_values = [
+        float(row["gold_accuracy"])
+        for dataset_name, row in reference_dataset_rows.items()
+        if is_mnli_dataset(dataset_name) and row.get("gold_accuracy") is not None
+    ]
+    candidate_anli_values = [
+        float(row["gold_accuracy"])
+        for dataset_name, row in candidate_dataset_rows.items()
+        if is_anli_dev_dataset(dataset_name) and row.get("gold_accuracy") is not None
+    ]
+    reference_anli_values = [
+        float(row["gold_accuracy"])
+        for dataset_name, row in reference_dataset_rows.items()
+        if is_anli_dev_dataset(dataset_name) and row.get("gold_accuracy") is not None
+    ]
+
+    candidate_mnli_macro = average(candidate_mnli_values)
+    reference_mnli_macro = average(reference_mnli_values)
+    candidate_anli_macro = average(candidate_anli_values)
+    reference_anli_macro = average(reference_anli_values)
+
+    metrics["mnli_macro_accuracy"] = candidate_mnli_macro
+    metrics["anli_macro_accuracy"] = candidate_anli_macro
+
+    if candidate_mnli_macro is None or reference_mnli_macro is None:
+        reasons.append("missing MNLI development accuracy")
+    else:
+        metrics["mnli_macro_accuracy_drop"] = reference_mnli_macro - candidate_mnli_macro
+        if reference_mnli_macro - candidate_mnli_macro > 0.005:
+            reasons.append("MNLI macro accuracy drop exceeds 0.5 points")
+
+    if candidate_anli_macro is None or reference_anli_macro is None:
+        reasons.append("missing ANLI development accuracy")
+    else:
+        metrics["anli_macro_accuracy_drop"] = reference_anli_macro - candidate_anli_macro
+        if reference_anli_macro - candidate_anli_macro > 0.010:
+            reasons.append("ANLI macro accuracy drop exceeds 1.0 point")
+
+    for dataset_name, row in candidate_dataset_rows.items():
+        if not (is_mnli_dataset(dataset_name) or is_anli_dev_dataset(dataset_name)):
+            continue
+        reference_row = reference_dataset_rows.get(dataset_name)
+        if reference_row is None:
+            reasons.append(f"missing reference row for {dataset_name}")
+            continue
+        candidate_accuracy = row.get("gold_accuracy")
+        reference_accuracy = reference_row.get("gold_accuracy")
+        if candidate_accuracy is None or reference_accuracy is None:
+            reasons.append(f"missing gold accuracy for {dataset_name}")
+            continue
+        if float(reference_accuracy) - float(candidate_accuracy) > 0.015:
+            reasons.append(f"{dataset_name} accuracy drop exceeds 1.5 points")
+
+    if candidate["float_label_agreement"] is None or float(candidate["float_label_agreement"]) < 0.98:
+        reasons.append("aggregate float-label agreement is below 98.0%")
+
+    if candidate_runtime is not None and reference_runtime is not None:
+        candidate_peak_rss = optional_float(candidate_runtime, "peak_rss_after_timed_runs_median_bytes")
+        reference_peak_rss = optional_float(reference_runtime, "peak_rss_after_timed_runs_median_bytes")
+        if candidate_peak_rss is None or reference_peak_rss is None:
+            reasons.append("missing peak RSS for CPU persistent benchmark")
+        else:
+            metrics["peak_rss_ratio_vs_reference"] = (
+                candidate_peak_rss / reference_peak_rss if reference_peak_rss else None
+            )
+            if reference_peak_rss and candidate_peak_rss > reference_peak_rss * 1.25:
+                reasons.append("peak RSS exceeds reference by more than 25%")
+
+    return not reasons, reasons, metrics
+
+
+def dominates_final(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left["quantization"] == right["quantization"]:
+        return False
+
+    left_values = (
+        left.get("size_bytes"),
+        left.get("cpu_persistent_warm_median_ms"),
+        left.get("cpu_persistent_resident_after_warmup_bytes"),
+    )
+    right_values = (
+        right.get("size_bytes"),
+        right.get("cpu_persistent_warm_median_ms"),
+        right.get("cpu_persistent_resident_after_warmup_bytes"),
+    )
+    if any(value is None for value in left_values + right_values):
+        return False
+    if any(float(left_value) > float(right_value) for left_value, right_value in zip(left_values, right_values)):
+        return False
+    return any(float(left_value) < float(right_value) for left_value, right_value in zip(left_values, right_values))
+
+
+def choose_recommendation(frontier_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not frontier_rows:
+        return None
+    chosen = min(
+        frontier_rows,
+        key=lambda row: (
+            float(row["size_bytes"]),
+            float(row.get("cpu_persistent_warm_median_ms") or float("inf")),
+            float(row.get("cpu_persistent_resident_after_warmup_bytes") or float("inf")),
+            -float(row.get("final_test_gold_accuracy") or 0.0),
+            row["quantization"],
+        ),
+    )
+    return {
+        "quantization": chosen["quantization"],
+        "artifact_path": chosen["artifact_path"],
+    }
+
+
+def build_candidate_rows(
+    validation_aggregates: dict[str, dict[str, Any]],
+    test_aggregates: dict[str, dict[str, Any]],
+    stress_aggregates: dict[str, dict[str, Any]],
+    runtime_rows: dict[str, dict[str, str]],
+    cold_rows: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    candidate_names = sorted(
+        set(validation_aggregates) | set(test_aggregates) | set(stress_aggregates) | set(runtime_rows) | set(cold_rows)
+    )
+    rows: list[dict[str, Any]] = []
+    for candidate_name in candidate_names:
+        validation = validation_aggregates.get(candidate_name, {})
+        test = test_aggregates.get(candidate_name, {})
+        stress = stress_aggregates.get(candidate_name, {})
+        runtime = runtime_rows.get(candidate_name, {})
+        cold = cold_rows.get(candidate_name, {})
+        rows.append(
+            {
+                "quantization": candidate_name,
+                "artifact_path": validation.get("artifact_path", test.get("artifact_path", "")),
+                "size_bytes": validation.get("size_bytes", test.get("size_bytes")),
+                "smooth_quant_disabled": validation.get("smooth_quant_disabled"),
+                "retry_reason": validation.get("retry_reason", ""),
+                "validation_complete": validation.get("complete", False),
+                "validation_gold_accuracy": validation.get("gold_accuracy"),
+                "validation_float_label_agreement": validation.get("float_label_agreement"),
+                "final_test_complete": test.get("complete", False),
+                "final_test_gold_accuracy": test.get("gold_accuracy"),
+                "final_test_float_label_agreement": test.get("float_label_agreement"),
+                "stress_complete": stress.get("complete", False),
+                "stress_gold_accuracy": stress.get("gold_accuracy"),
+                "stress_float_label_agreement": stress.get("float_label_agreement"),
+                "cpu_persistent_load_median_ms": optional_float(runtime, "load_median_ms"),
+                "cpu_persistent_warm_median_ms": optional_float(runtime, "warm_median_ms"),
+                "cpu_persistent_resident_after_warmup_bytes": optional_float(
+                    runtime, "resident_after_warmup_median_bytes"
+                ),
+                "cpu_persistent_peak_rss_bytes": optional_float(
+                    runtime, "peak_rss_after_timed_runs_median_bytes"
+                ),
+                "cpu_cold_load_median_ms": optional_float(cold, "load_median_ms"),
+                "cpu_cold_warm_median_ms": optional_float(cold, "warm_median_ms"),
+            }
+        )
+    return rows
+
+
+def write_flat_csv(path: pathlib.Path | str, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    resolved = resolve_absolute_path(path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    with resolved.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field) for field in fieldnames})
+
+
+def relative_link(target: pathlib.Path, source_dir: pathlib.Path) -> str:
+    return os.path.relpath(target, start=source_dir)
+
+
+def repo_relative_label(target: pathlib.Path) -> str:
+    try:
+        return target.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return target.name
+
+
+def markdown_link(target: pathlib.Path, report_dir: pathlib.Path) -> str:
+    return f"[{repo_relative_label(target)}]({relative_link(target, report_dir)})"
+
+
+def attempt4_report_paths(
+    output_prefix: pathlib.Path | str,
+    *,
+    partial: bool,
+) -> dict[str, pathlib.Path]:
+    prefix = resolve_absolute_path(output_prefix)
+    stem = f"{prefix.name}-partial" if partial else prefix.name
+    return {
+        "candidate_csv": prefix.parent / f"{stem}.csv",
+        "candidate_json": prefix.parent / f"{stem}.json",
+        "per_dataset_csv": prefix.parent / f"{stem}-per-dataset.csv",
+        "per_dataset_json": prefix.parent / f"{stem}-per-dataset.json",
+        "per_language_csv": prefix.parent / f"{stem}-per-language.csv",
+        "per_language_json": prefix.parent / f"{stem}-per-language.json",
+        "report_markdown": prefix.parent / f"{stem}.md",
+    }
+
+
+def delete_attempt4_report_paths(output_prefix: pathlib.Path | str, *, partial: bool) -> None:
+    for path in attempt4_report_paths(output_prefix, partial=partial).values():
+        path.unlink(missing_ok=True)
+
+
+def build_attempt4_cpu_report(
+    datasets_manifest_path: pathlib.Path | str,
+    validation_summary_path: pathlib.Path | str,
+    validation_runtime_path: pathlib.Path | str,
+    output_prefix: pathlib.Path | str,
+    *,
+    test_summary_path: pathlib.Path | str | None = None,
+    stress_summary_path: pathlib.Path | str | None = None,
+    cold_benchmark_path: pathlib.Path | str | None = None,
+    report_markdown_path: pathlib.Path | str | None = None,
+) -> dict[str, Any]:
+    datasets_manifest = dict(read_json(datasets_manifest_path))
+    validation_summary_rows = read_summary_rows(validation_summary_path)
+    test_summary_rows = read_summary_rows(test_summary_path) if test_summary_path else []
+    stress_summary_rows = read_summary_rows(stress_summary_path) if stress_summary_path else []
+    validation_runtime_rows = read_benchmark_rows(validation_runtime_path)
+    cold_rows = read_benchmark_rows(cold_benchmark_path) if cold_benchmark_path else {}
+
+    validation_datasets = list(datasets_manifest["validation_datasets"])
+    test_datasets = list(datasets_manifest["test_datasets"])
+    stress_datasets = list(datasets_manifest["stress_datasets"])
+
+    validation_aggregates = aggregate_required_rows(validation_summary_rows, validation_datasets)
+    test_aggregates = aggregate_required_rows(test_summary_rows, test_datasets) if test_summary_rows else {}
+    stress_aggregates = aggregate_required_rows(stress_summary_rows, stress_datasets) if stress_summary_rows else {}
+
+    candidate_rows = build_candidate_rows(
+        validation_aggregates,
+        test_aggregates,
+        stress_aggregates,
+        validation_runtime_rows,
+        cold_rows,
+    )
+    candidate_rows_by_name = {str(row["quantization"]): row for row in candidate_rows}
+
+    development_complete = all(bool(item.get("complete")) for item in validation_aggregates.values())
+    write_partial = not development_complete
+
+    locked_quantizations: list[str] = []
+    final_frontier: list[dict[str, Any]] = []
+    recommendation = None
+
+    for candidate_name in sorted(validation_aggregates):
+        if not write_partial:
+            gate_pass, reasons, gate_metrics = validation_gate(
+                candidate_name,
+                validation_aggregates,
+                validation_runtime_rows,
+            )
+        else:
+            gate_pass = False
+            gate_metrics = {
+                "mnli_macro_accuracy": None,
+                "mnli_macro_accuracy_drop": None,
+                "anli_macro_accuracy": None,
+                "anli_macro_accuracy_drop": None,
+                "validation_float_label_agreement": validation_aggregates[candidate_name].get("float_label_agreement"),
+                "peak_rss_ratio_vs_reference": None,
+            }
+            if validation_aggregates[candidate_name].get("complete"):
+                reasons = ["pending incomplete development summary"]
+            else:
+                reasons = ["missing validation datasets"]
+
+        row = candidate_rows_by_name.setdefault(
+            candidate_name,
+            {
+                "quantization": candidate_name,
+                "artifact_path": validation_aggregates[candidate_name]["artifact_path"],
+                "size_bytes": validation_aggregates[candidate_name]["size_bytes"],
+            },
+        )
+        row["validation_gate_pass"] = gate_pass
+        row["validation_gate_reasons"] = reasons
+        row["validation_gate_reason_text"] = "; ".join(reasons)
+        row.update(gate_metrics)
+        row["final_frontier"] = False
+        if not write_partial and (candidate_name == "reference" or gate_pass):
+            locked_quantizations.append(candidate_name)
+
+    if not write_partial and test_aggregates:
+        locked_rows = []
+        for candidate_name in locked_quantizations:
+            candidate_row = candidate_rows_by_name[candidate_name]
+            if not candidate_row.get("final_test_complete"):
+                continue
+            locked_rows.append(candidate_row)
+        for row in locked_rows:
+            row["final_frontier"] = not any(dominates_final(other, row) for other in locked_rows)
+            if row["final_frontier"]:
+                final_frontier.append(row)
+        recommendation = choose_recommendation(final_frontier)
+
+    per_dataset_rows: list[dict[str, Any]] = []
+    for phase_name, rows in (
+        ("validation", validation_summary_rows),
+        ("test", test_summary_rows),
+        ("stress", stress_summary_rows),
+    ):
+        for row in rows:
+            enriched = dict(row)
+            enriched["phase"] = phase_name
+            enriched["language"] = xnli_language(str(row["dataset"]))
+            per_dataset_rows.append(enriched)
+
+    per_language_rows = [
+        row
+        for row in per_dataset_rows
+        if row["language"] is not None and row["phase"] == "test"
+    ]
+
+    candidate_summary_rows = sorted(candidate_rows_by_name.values(), key=lambda row: row["quantization"])
+    output_paths = attempt4_report_paths(output_prefix, partial=write_partial)
+    if report_markdown_path:
+        output_paths["report_markdown"] = resolve_absolute_path(report_markdown_path)
+
+    write_flat_csv(
+        output_paths["candidate_csv"],
+        candidate_summary_rows,
+        [
+            "quantization",
+            "artifact_path",
+            "size_bytes",
+            "smooth_quant_disabled",
+            "retry_reason",
+            "validation_complete",
+            "validation_gate_pass",
+            "validation_gate_reason_text",
+            "validation_gold_accuracy",
+            "validation_float_label_agreement",
+            "mnli_macro_accuracy",
+            "mnli_macro_accuracy_drop",
+            "anli_macro_accuracy",
+            "anli_macro_accuracy_drop",
+            "peak_rss_ratio_vs_reference",
+            "cpu_persistent_load_median_ms",
+            "cpu_persistent_warm_median_ms",
+            "cpu_persistent_resident_after_warmup_bytes",
+            "cpu_persistent_peak_rss_bytes",
+            "cpu_cold_load_median_ms",
+            "cpu_cold_warm_median_ms",
+            "final_test_complete",
+            "final_test_gold_accuracy",
+            "final_test_float_label_agreement",
+            "stress_complete",
+            "stress_gold_accuracy",
+            "stress_float_label_agreement",
+            "final_frontier",
+        ],
+    )
+    write_json(
+        output_paths["candidate_json"],
+        {
+            "locked_quantizations": locked_quantizations,
+            "recommendation": recommendation,
+            "candidates": candidate_summary_rows,
+            "final_frontier": [row["quantization"] for row in final_frontier],
+        },
+    )
+    write_flat_csv(
+        output_paths["per_dataset_csv"],
+        per_dataset_rows,
+        [
+            "phase",
+            "dataset",
+            "role",
+            "backend",
+            "quantization",
+            "language",
+            "gold_accuracy",
+            "float_label_agreement",
+            "mean_abs_logit_delta",
+            "max_abs_logit_delta",
+            "example_count",
+            "labeled_example_count",
+            "correct_prediction_count",
+            "disagreement_count",
+            "pareto_frontier",
+        ],
+    )
+    write_json(output_paths["per_dataset_json"], {"rows": per_dataset_rows})
+    write_flat_csv(
+        output_paths["per_language_csv"],
+        per_language_rows,
+        [
+            "phase",
+            "dataset",
+            "language",
+            "quantization",
+            "gold_accuracy",
+            "float_label_agreement",
+            "example_count",
+        ],
+    )
+    write_json(output_paths["per_language_json"], {"rows": per_language_rows})
+
+    report_path = output_paths["report_markdown"]
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_dir = report_path.parent
+    lines = [
+        "# Attempt4 CPU Deployment Study",
+        "",
+        "## Locked Quantizations",
+        "",
+        (
+            "- Locked after development gates: pending incomplete development summary"
+            if write_partial
+            else f"- Locked after development gates: {', '.join(f'`{name}`' for name in locked_quantizations)}"
+        ),
+        (
+            "- Recommendation: pending incomplete development summary"
+            if write_partial
+            else f"- Recommendation: `{recommendation['quantization']}`"
+            if recommendation
+            else "- Recommendation: pending locked-final test"
+        ),
+        "",
+        "## Candidate Summary",
+        "",
+        "| Candidate | Gate | Dev Acc | Dev Float Agree | CPU Warm | CPU Steady RSS | CPU Peak RSS | Cold Load |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in candidate_summary_rows:
+        gate_value = row.get("validation_gate_pass")
+        gate_text = "pass" if gate_value else "pending" if write_partial else "fail"
+        lines.append(
+            "| "
+            f"`{row['quantization']}` | "
+            f"{gate_text} | "
+            f"{percent_text(row.get('validation_gold_accuracy'))} | "
+            f"{percent_text(row.get('validation_float_label_agreement'))} | "
+            f"{ms_text(row.get('cpu_persistent_warm_median_ms'))} | "
+            f"{mib_text(row.get('cpu_persistent_resident_after_warmup_bytes'))} | "
+            f"{mib_text(row.get('cpu_persistent_peak_rss_bytes'))} | "
+            f"{ms_text(row.get('cpu_cold_load_median_ms'))} |"
+        )
+
+    if not write_partial and test_aggregates:
+        lines.extend(
+            [
+                "",
+                "## Locked Final Frontier",
+                "",
+                "| Candidate | Size | Final Acc | Final Float Agree | CPU Warm | CPU Steady RSS | Frontier |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in candidate_summary_rows:
+            if row["quantization"] not in locked_quantizations or not row.get("final_test_complete"):
+                continue
+            lines.append(
+                "| "
+                f"`{row['quantization']}` | "
+                f"{mib_text(row.get('size_bytes'))} | "
+                f"{percent_text(row.get('final_test_gold_accuracy'))} | "
+                f"{percent_text(row.get('final_test_float_label_agreement'))} | "
+                f"{ms_text(row.get('cpu_persistent_warm_median_ms'))} | "
+                f"{mib_text(row.get('cpu_persistent_resident_after_warmup_bytes'))} | "
+                f"{'frontier' if row.get('final_frontier') else '-'} |"
+            )
+
+    if per_language_rows:
+        lines.extend(
+            [
+                "",
+                "## XNLI Per-Language Rows",
+                "",
+                f"- {markdown_link(output_paths['per_language_csv'], report_dir)}",
+                f"- {markdown_link(output_paths['per_language_json'], report_dir)}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Evidence",
+            "",
+            f"- {markdown_link(output_paths['candidate_csv'], report_dir)}",
+            f"- {markdown_link(output_paths['candidate_json'], report_dir)}",
+            f"- {markdown_link(output_paths['per_dataset_csv'], report_dir)}",
+            f"- {markdown_link(output_paths['per_dataset_json'], report_dir)}",
+            f"- {markdown_link(resolve_absolute_path(validation_summary_path), report_dir)}",
+            f"- {markdown_link(resolve_absolute_path(validation_runtime_path), report_dir)}",
+            f"- {markdown_link(resolve_absolute_path(datasets_manifest_path), report_dir)}",
+        ]
+    )
+    if test_summary_path:
+        lines.append(f"- {markdown_link(resolve_absolute_path(test_summary_path), report_dir)}")
+    if stress_summary_path:
+        lines.append(f"- {markdown_link(resolve_absolute_path(stress_summary_path), report_dir)}")
+    if cold_benchmark_path:
+        lines.append(f"- {markdown_link(resolve_absolute_path(cold_benchmark_path), report_dir)}")
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    if write_partial:
+        delete_attempt4_report_paths(output_prefix, partial=False)
+    else:
+        delete_attempt4_report_paths(output_prefix, partial=True)
+
+    return {
+        "partial": write_partial,
+        "paths": output_paths,
+        "locked_quantizations": locked_quantizations,
+        "recommendation": recommendation,
+        "candidate_rows": candidate_summary_rows,
+        "final_frontier": [row["quantization"] for row in final_frontier],
+    }
 
 
 def read_benchmark_examples(
