@@ -18,10 +18,14 @@ import datetime
 import email.utils
 import hashlib
 import json
+import math
+import os
 import pathlib
+import resource
 import shlex
 import shutil
 import sqlite3
+import statistics
 import subprocess
 import sys
 import time
@@ -167,6 +171,14 @@ class DatasetRowRecord:
 class DatasetExample:
     source_row_id: str
     label: str | None
+    premise: str
+    hypothesis: str
+
+
+@dataclass(frozen=True)
+class BenchmarkExample:
+    benchmark: str
+    example_id: str
     premise: str
     hypothesis: str
 
@@ -335,6 +347,650 @@ class CpuOrtPredictor:
         return (float(logits[0]), float(logits[1]), float(logits[2]))
 
 
+def percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    index = max(0, math.ceil(pct * len(sorted_values)) - 1)
+    return float(sorted_values[min(index, len(sorted_values) - 1)])
+
+
+def summarize_numeric(values: Sequence[float]) -> dict[str, float | None]:
+    normalized = [float(value) for value in values]
+    return {
+        "mean": statistics.fmean(normalized) if normalized else None,
+        "median": statistics.median(normalized) if normalized else None,
+        "p95": percentile(normalized, 0.95),
+        "min": min(normalized) if normalized else None,
+        "max": max(normalized) if normalized else None,
+    }
+
+
+def benchmark_csv_fieldnames() -> list[str]:
+    return [
+        "candidate",
+        "backend",
+        "mode",
+        "examples",
+        "file_size_bytes",
+        "load_mean_ms",
+        "load_median_ms",
+        "load_p95_ms",
+        "warm_mean_ms",
+        "warm_median_ms",
+        "warm_p95_ms",
+        "warm_min_ms",
+        "warm_max_ms",
+        "resident_after_load_mean_bytes",
+        "resident_after_load_median_bytes",
+        "resident_after_load_p95_bytes",
+        "resident_after_warmup_mean_bytes",
+        "resident_after_warmup_median_bytes",
+        "resident_after_warmup_p95_bytes",
+        "resident_after_timed_runs_mean_bytes",
+        "resident_after_timed_runs_median_bytes",
+        "resident_after_timed_runs_p95_bytes",
+        "peak_rss_after_load_mean_bytes",
+        "peak_rss_after_load_median_bytes",
+        "peak_rss_after_load_p95_bytes",
+        "peak_rss_after_warmup_mean_bytes",
+        "peak_rss_after_warmup_median_bytes",
+        "peak_rss_after_warmup_p95_bytes",
+        "peak_rss_after_timed_runs_mean_bytes",
+        "peak_rss_after_timed_runs_median_bytes",
+        "peak_rss_after_timed_runs_p95_bytes",
+        "time_l_peak_rss_mean_bytes",
+        "time_l_peak_rss_median_bytes",
+        "time_l_peak_rss_p95_bytes",
+    ]
+
+
+def write_json(path: pathlib.Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def write_benchmark_csv(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=benchmark_csv_fieldnames())
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(
+                {
+                    "candidate": row["candidate"],
+                    "backend": row["backend"],
+                    "mode": row["mode"],
+                    "examples": row["examples"],
+                    "file_size_bytes": row["file_size_bytes"],
+                    "load_mean_ms": row["load_ms"]["mean"],
+                    "load_median_ms": row["load_ms"]["median"],
+                    "load_p95_ms": row["load_ms"]["p95"],
+                    "warm_mean_ms": row["warm_latency_ms"]["mean"],
+                    "warm_median_ms": row["warm_latency_ms"]["median"],
+                    "warm_p95_ms": row["warm_latency_ms"]["p95"],
+                    "warm_min_ms": row["warm_latency_ms"]["min"],
+                    "warm_max_ms": row["warm_latency_ms"]["max"],
+                    "resident_after_load_mean_bytes": row["resident_after_load_bytes"]["mean"],
+                    "resident_after_load_median_bytes": row["resident_after_load_bytes"]["median"],
+                    "resident_after_load_p95_bytes": row["resident_after_load_bytes"]["p95"],
+                    "resident_after_warmup_mean_bytes": row["resident_after_warmup_bytes"]["mean"],
+                    "resident_after_warmup_median_bytes": row["resident_after_warmup_bytes"]["median"],
+                    "resident_after_warmup_p95_bytes": row["resident_after_warmup_bytes"]["p95"],
+                    "resident_after_timed_runs_mean_bytes": row["resident_after_timed_runs_bytes"]["mean"],
+                    "resident_after_timed_runs_median_bytes": row["resident_after_timed_runs_bytes"]["median"],
+                    "resident_after_timed_runs_p95_bytes": row["resident_after_timed_runs_bytes"]["p95"],
+                    "peak_rss_after_load_mean_bytes": row["peak_rss_after_load_bytes"]["mean"],
+                    "peak_rss_after_load_median_bytes": row["peak_rss_after_load_bytes"]["median"],
+                    "peak_rss_after_load_p95_bytes": row["peak_rss_after_load_bytes"]["p95"],
+                    "peak_rss_after_warmup_mean_bytes": row["peak_rss_after_warmup_bytes"]["mean"],
+                    "peak_rss_after_warmup_median_bytes": row["peak_rss_after_warmup_bytes"]["median"],
+                    "peak_rss_after_warmup_p95_bytes": row["peak_rss_after_warmup_bytes"]["p95"],
+                    "peak_rss_after_timed_runs_mean_bytes": row["peak_rss_after_timed_runs_bytes"]["mean"],
+                    "peak_rss_after_timed_runs_median_bytes": row["peak_rss_after_timed_runs_bytes"]["median"],
+                    "peak_rss_after_timed_runs_p95_bytes": row["peak_rss_after_timed_runs_bytes"]["p95"],
+                    "time_l_peak_rss_mean_bytes": row["time_l_peak_rss_bytes"]["mean"],
+                    "time_l_peak_rss_median_bytes": row["time_l_peak_rss_bytes"]["median"],
+                    "time_l_peak_rss_p95_bytes": row["time_l_peak_rss_bytes"]["p95"],
+                }
+            )
+
+
+def read_benchmark_examples(
+    tsv_paths: Sequence[pathlib.Path],
+    sample_mode: str,
+    max_examples: int,
+    *,
+    seed: int = 0,
+) -> list[BenchmarkExample]:
+    examples: list[BenchmarkExample] = []
+    for tsv_path in tsv_paths:
+        with tsv_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if "premise" not in (reader.fieldnames or ()) or "hypothesis" not in (reader.fieldnames or ()):
+                raise RuntimeError(f"TSV must include premise and hypothesis columns: {tsv_path}")
+            for index, row in enumerate(reader):
+                examples.append(
+                    BenchmarkExample(
+                        benchmark=(row.get("benchmark") or "").strip() or tsv_path.name,
+                        example_id=(row.get("id") or f"{tsv_path.stem}-{index + 1}").strip(),
+                        premise=str(row["premise"]),
+                        hypothesis=str(row["hypothesis"]),
+                    )
+                )
+
+    if sample_mode != "first":
+        raise RuntimeError(f"Unsupported benchmark sample mode: {sample_mode}")
+    if max_examples > 0:
+        examples = examples[:max_examples]
+    if not examples:
+        raise RuntimeError("No runtime benchmark examples loaded")
+    return examples
+
+
+def peak_rss_bytes() -> float | None:
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+    except (AttributeError, ValueError, OSError):
+        return None
+    value = getattr(usage, "ru_maxrss", 0)
+    if value <= 0:
+        return None
+    if sys.platform == "darwin":
+        return float(value)
+    return float(value) * 1024.0
+
+
+def process_rss_bytes(pid: int) -> float | None:
+    completed = subprocess.run(
+        ["ps", "-o", "rss=", "-p", str(pid)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    if not value:
+        return None
+    try:
+        return float(value) * 1024.0
+    except ValueError:
+        return None
+
+
+def benchmark_warm_runs(
+    predictor: CpuOrtPredictor,
+    example: BenchmarkExample,
+    repeat: int,
+) -> list[float]:
+    runs_ms: list[float] = []
+    for _ in range(repeat):
+        started_at = time.perf_counter()
+        predictor.predict_logits(example.premise, example.hypothesis)
+        runs_ms.append((time.perf_counter() - started_at) * 1000.0)
+    return runs_ms
+
+
+def benchmark_examples_payload(examples: Sequence[BenchmarkExample]) -> list[dict[str, str]]:
+    return [
+        {
+            "benchmark": example.benchmark,
+            "id": example.example_id,
+            "premise": example.premise,
+            "hypothesis": example.hypothesis,
+        }
+        for example in examples
+    ]
+
+
+def parse_benchmark_examples(payload: Sequence[dict[str, object]]) -> list[BenchmarkExample]:
+    return [
+        BenchmarkExample(
+            benchmark=str(item["benchmark"]),
+            example_id=str(item["id"]),
+            premise=str(item["premise"]),
+            hypothesis=str(item["hypothesis"]),
+        )
+        for item in payload
+    ]
+
+
+def benchmark_worker_persistent(request: dict[str, object]) -> dict[str, object]:
+    model_path = pathlib.Path(str(request["model_path"]))
+    tokenizer_root = pathlib.Path(str(request["tokenizer_root"]))
+    backend = str(request["backend"])
+    repeat = int(request["repeat"])
+    warmup = int(request["warmup"])
+    examples = parse_benchmark_examples(list(request["examples"]))
+
+    load_started_at = time.perf_counter()
+    predictor = CpuOrtPredictor(model_path, tokenizer_root, backend)
+    load_ms = (time.perf_counter() - load_started_at) * 1000.0
+
+    pid = os.getpid()
+    resident_after_load = process_rss_bytes(pid)
+    peak_after_load = peak_rss_bytes()
+
+    for example in examples:
+        for _ in range(warmup):
+            predictor.predict_logits(example.premise, example.hypothesis)
+
+    resident_after_warmup = process_rss_bytes(pid)
+    peak_after_warmup = peak_rss_bytes()
+
+    warm_run_values: list[float] = []
+    per_example: list[dict[str, object]] = []
+    per_benchmark_runs: dict[str, list[float]] = {}
+
+    for example in examples:
+        runs_ms = benchmark_warm_runs(predictor, example, repeat)
+        warm_run_values.extend(runs_ms)
+        per_benchmark_runs.setdefault(example.benchmark, []).extend(runs_ms)
+        summary = summarize_numeric(runs_ms)
+        per_example.append(
+            {
+                "benchmark": example.benchmark,
+                "id": example.example_id,
+                "timing_mean_ms": summary["mean"],
+                "timing_median_ms": summary["median"],
+                "timing_p95_ms": summary["p95"],
+                "timing_min_ms": summary["min"],
+                "timing_max_ms": summary["max"],
+            }
+        )
+
+    resident_after_timed_runs = process_rss_bytes(pid)
+    peak_after_timed_runs = peak_rss_bytes()
+
+    per_benchmark: dict[str, dict[str, object]] = {}
+    for benchmark_name in sorted(per_benchmark_runs):
+        benchmark_values = per_benchmark_runs[benchmark_name]
+        per_benchmark[benchmark_name] = {
+            "examples": sum(1 for example in examples if example.benchmark == benchmark_name),
+            "warm_latency_ms": summarize_numeric(benchmark_values),
+        }
+
+    return {
+        "examples": len(examples),
+        "file_size_bytes": model_path.stat().st_size,
+        "load_ms": summarize_numeric([load_ms]),
+        "warm_latency_ms": summarize_numeric(warm_run_values),
+        "resident_after_load_bytes": summarize_numeric([resident_after_load] if resident_after_load is not None else []),
+        "resident_after_warmup_bytes": summarize_numeric(
+            [resident_after_warmup] if resident_after_warmup is not None else []
+        ),
+        "resident_after_timed_runs_bytes": summarize_numeric(
+            [resident_after_timed_runs] if resident_after_timed_runs is not None else []
+        ),
+        "peak_rss_after_load_bytes": summarize_numeric([peak_after_load] if peak_after_load is not None else []),
+        "peak_rss_after_warmup_bytes": summarize_numeric(
+            [peak_after_warmup] if peak_after_warmup is not None else []
+        ),
+        "peak_rss_after_timed_runs_bytes": summarize_numeric(
+            [peak_after_timed_runs] if peak_after_timed_runs is not None else []
+        ),
+        "time_l_peak_rss_bytes": summarize_numeric([]),
+        "per_benchmark": per_benchmark,
+        "per_example": per_example,
+    }
+
+
+def benchmark_worker_coldstart(request: dict[str, object]) -> dict[str, object]:
+    examples = parse_benchmark_examples(list(request["examples"]))
+    if len(examples) != 1:
+        raise RuntimeError("Coldstart benchmark worker requires exactly one example")
+
+    example = examples[0]
+    model_path = pathlib.Path(str(request["model_path"]))
+    tokenizer_root = pathlib.Path(str(request["tokenizer_root"]))
+    backend = str(request["backend"])
+    repeat = int(request["repeat"])
+    warmup = int(request["warmup"])
+
+    load_started_at = time.perf_counter()
+    predictor = CpuOrtPredictor(model_path, tokenizer_root, backend)
+    load_ms = (time.perf_counter() - load_started_at) * 1000.0
+    pid = os.getpid()
+    resident_after_load = process_rss_bytes(pid)
+    peak_after_load = peak_rss_bytes()
+
+    for _ in range(warmup):
+        predictor.predict_logits(example.premise, example.hypothesis)
+    resident_after_warmup = process_rss_bytes(pid)
+    peak_after_warmup = peak_rss_bytes()
+    runs_ms = benchmark_warm_runs(predictor, example, repeat)
+    resident_after_timed_runs = process_rss_bytes(pid)
+    peak_after_timed_runs = peak_rss_bytes()
+    run_summary = summarize_numeric(runs_ms)
+    return {
+        "benchmark": example.benchmark,
+        "id": example.example_id,
+        "load_ms": load_ms,
+        "timing_mean_ms": run_summary["mean"],
+        "timing_median_ms": run_summary["median"],
+        "timing_p95_ms": run_summary["p95"],
+        "timing_min_ms": run_summary["min"],
+        "timing_max_ms": run_summary["max"],
+        "timing_runs_ms": runs_ms,
+        "resident_after_load_bytes": resident_after_load,
+        "resident_after_warmup_bytes": resident_after_warmup,
+        "resident_after_timed_runs_bytes": resident_after_timed_runs,
+        "peak_rss_after_load_bytes": peak_after_load,
+        "peak_rss_after_warmup_bytes": peak_after_warmup,
+        "peak_rss_after_timed_runs_bytes": peak_after_timed_runs,
+        "time_l_peak_rss_bytes": None,
+    }
+
+
+def aggregate_coldstart_worker_results(
+    model_path: pathlib.Path,
+    examples: Sequence[BenchmarkExample],
+    worker_rows: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    load_values: list[float] = []
+    warm_run_values: list[float] = []
+    resident_after_load_values: list[float] = []
+    resident_after_warmup_values: list[float] = []
+    resident_after_timed_runs_values: list[float] = []
+    peak_rss_after_load_values: list[float] = []
+    peak_rss_after_warmup_values: list[float] = []
+    peak_rss_after_timed_runs_values: list[float] = []
+    time_l_peak_rss_values: list[float] = []
+    per_example: list[dict[str, object]] = []
+
+    for row in worker_rows:
+        load_ms = float(row["load_ms"])
+        runs_ms = [float(value) for value in list(row["timing_runs_ms"])]
+        load_values.append(load_ms)
+        warm_run_values.extend(runs_ms)
+
+        resident_after_load = row.get("resident_after_load_bytes")
+        resident_after_warmup = row.get("resident_after_warmup_bytes")
+        resident_after_timed_runs = row.get("resident_after_timed_runs_bytes")
+        peak_rss_after_load = row.get("peak_rss_after_load_bytes")
+        peak_rss_after_warmup = row.get("peak_rss_after_warmup_bytes")
+        peak_rss_after_timed_runs = row.get("peak_rss_after_timed_runs_bytes")
+        time_l_peak_rss = row.get("time_l_peak_rss_bytes")
+
+        if resident_after_load is not None:
+            resident_after_load_values.append(float(resident_after_load))
+        if resident_after_warmup is not None:
+            resident_after_warmup_values.append(float(resident_after_warmup))
+        if resident_after_timed_runs is not None:
+            resident_after_timed_runs_values.append(float(resident_after_timed_runs))
+        if peak_rss_after_load is not None:
+            peak_rss_after_load_values.append(float(peak_rss_after_load))
+        if peak_rss_after_warmup is not None:
+            peak_rss_after_warmup_values.append(float(peak_rss_after_warmup))
+        if peak_rss_after_timed_runs is not None:
+            peak_rss_after_timed_runs_values.append(float(peak_rss_after_timed_runs))
+        if time_l_peak_rss is not None:
+            time_l_peak_rss_values.append(float(time_l_peak_rss))
+
+        per_example.append(
+            {
+                "benchmark": str(row["benchmark"]),
+                "id": str(row["id"]),
+                "load_ms": load_ms,
+                "timing_mean_ms": float(row["timing_mean_ms"]),
+                "timing_median_ms": float(row["timing_median_ms"]),
+                "timing_p95_ms": float(row["timing_p95_ms"]),
+                "timing_min_ms": None if row.get("timing_min_ms") is None else float(row["timing_min_ms"]),
+                "timing_max_ms": None if row.get("timing_max_ms") is None else float(row["timing_max_ms"]),
+                "timing_runs_ms": runs_ms,
+                "resident_after_load_bytes": None if resident_after_load is None else float(resident_after_load),
+                "resident_after_warmup_bytes": None if resident_after_warmup is None else float(resident_after_warmup),
+                "resident_after_timed_runs_bytes": None
+                if resident_after_timed_runs is None
+                else float(resident_after_timed_runs),
+                "peak_rss_after_load_bytes": None if peak_rss_after_load is None else float(peak_rss_after_load),
+                "peak_rss_after_warmup_bytes": None if peak_rss_after_warmup is None else float(peak_rss_after_warmup),
+                "peak_rss_after_timed_runs_bytes": None
+                if peak_rss_after_timed_runs is None
+                else float(peak_rss_after_timed_runs),
+                "time_l_peak_rss_bytes": None if time_l_peak_rss is None else float(time_l_peak_rss),
+            }
+        )
+
+    per_benchmark: dict[str, dict[str, object]] = {}
+    for benchmark_name in sorted({row["benchmark"] for row in per_example}):
+        benchmark_rows = [row for row in per_example if row["benchmark"] == benchmark_name]
+        benchmark_loads = [float(row["load_ms"]) for row in benchmark_rows]
+        benchmark_runs = [run_ms for row in benchmark_rows for run_ms in row["timing_runs_ms"]]
+        per_benchmark[benchmark_name] = {
+            "examples": len(benchmark_rows),
+            "load_ms": summarize_numeric(benchmark_loads),
+            "warm_latency_ms": summarize_numeric(benchmark_runs),
+        }
+
+    return {
+        "examples": len(examples),
+        "file_size_bytes": model_path.stat().st_size,
+        "load_ms": summarize_numeric(load_values),
+        "warm_latency_ms": summarize_numeric(warm_run_values),
+        "resident_after_load_bytes": summarize_numeric(resident_after_load_values),
+        "resident_after_warmup_bytes": summarize_numeric(resident_after_warmup_values),
+        "resident_after_timed_runs_bytes": summarize_numeric(resident_after_timed_runs_values),
+        "peak_rss_after_load_bytes": summarize_numeric(peak_rss_after_load_values),
+        "peak_rss_after_warmup_bytes": summarize_numeric(peak_rss_after_warmup_values),
+        "peak_rss_after_timed_runs_bytes": summarize_numeric(peak_rss_after_timed_runs_values),
+        "time_l_peak_rss_bytes": summarize_numeric(time_l_peak_rss_values),
+        "per_benchmark": per_benchmark,
+        "per_example": per_example,
+    }
+
+
+def internal_benchmark_request(
+    request: dict[str, object],
+) -> dict[str, object]:
+    mode = str(request["mode"])
+    if mode == "persistent":
+        return benchmark_worker_persistent(request)
+    if mode == "coldstart":
+        return benchmark_worker_coldstart(request)
+    raise RuntimeError(f"Unknown internal benchmark mode: {mode}")
+
+
+def invoke_internal_benchmark_request(request: dict[str, object]) -> dict[str, object]:
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "tools" / "replication_cpu_final.py"),
+        "--internal-benchmark-worker",
+        "--internal-benchmark-request",
+        json.dumps(request),
+    ]
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Internal benchmark worker failed:\n"
+            f"command={' '.join(command)}\n"
+            f"stdout={completed.stdout}\n"
+            f"stderr={completed.stderr}"
+        )
+    return json.loads(completed.stdout)
+
+
+def load_existing_benchmark_cache(
+    output_prefix: pathlib.Path,
+) -> dict[str, object] | None:
+    candidates = [
+        output_prefix.with_suffix(".json"),
+        output_prefix.parent / f"{output_prefix.name}-partial.json",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    return None
+
+
+def benchmark_payload(
+    *,
+    examples: Sequence[BenchmarkExample],
+    mode: str,
+    repeat: int,
+    warmup: int,
+    rows: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "examples": len(examples),
+        "sources": sorted({example.benchmark for example in examples}),
+        "mode": mode,
+        "repeat": repeat,
+        "warmup": warmup,
+        "sample_mode": "first",
+        "max_examples": 0,
+        "results": rows,
+    }
+
+
+def benchmark_partial_paths(output_prefix: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    return (
+        output_prefix.parent / f"{output_prefix.name}-partial.json",
+        output_prefix.parent / f"{output_prefix.name}-partial.csv",
+    )
+
+
+def refresh_quantization_for_benchmark(
+    connection: sqlite3.Connection,
+    quantization_name: str,
+) -> QuantizationRecord:
+    quantization = load_quantization_record(connection, quantization_name)
+    current_state = inspect_artifact(quantization.artifact_path, None)
+    update_artifact_state(
+        connection,
+        quantization.artifact_id,
+        current_state,
+        quantization.stdout_log_path,
+        quantization.stderr_log_path,
+    )
+    refreshed = load_quantization_record(connection, quantization_name)
+    if refreshed.artifact_status != STUDY_STATUS_MATERIALIZED or not refreshed.artifact_sha256:
+        raise RuntimeError(f"Benchmark artifact is not materialized: {quantization_name}")
+    return refreshed
+
+
+def benchmark_result_sort_key(row: dict[str, object]) -> tuple[object, object, object]:
+    return (
+        row["backend"],
+        row["warm_latency_ms"]["median"],
+        row["load_ms"]["median"],
+    )
+
+
+def benchmark_runtime_phase(
+    scratchpad_root: pathlib.Path | str,
+    mode: str,
+    quantizations: Sequence[str],
+    output_prefix: pathlib.Path | str,
+    *,
+    repeat: int = 5,
+    warmup: int = 1,
+    worker_runner: Callable[[dict[str, object]], dict[str, object]] | None = None,
+) -> pathlib.Path:
+    scratchpad = resolve_absolute_path(scratchpad_root)
+    prefix = resolve_absolute_path(output_prefix)
+    if mode not in {"persistent", "coldstart"}:
+        raise RuntimeError(f"Unsupported runtime benchmark mode: {mode}")
+
+    probe_path = scratchpad / "datasets" / "hf-core-probe.tsv"
+    examples = read_benchmark_examples([probe_path], "first", 0)
+    runner = worker_runner or invoke_internal_benchmark_request
+    cached_payload = load_existing_benchmark_cache(prefix)
+    cached_rows = {
+        str(row["candidate"]): dict(row)
+        for row in list(cached_payload.get("results", []))
+    } if isinstance(cached_payload, dict) else {}
+
+    connection = open_study_connection(scratchpad / "db.sqlite3")
+    try:
+        completed_rows: list[dict[str, object]] = []
+        partial_json_path, partial_csv_path = benchmark_partial_paths(prefix)
+
+        for quantization_name in quantizations:
+            quantization = refresh_quantization_for_benchmark(connection, quantization_name)
+            cached_row = cached_rows.get(quantization_name)
+            if (
+                cached_row is not None
+                and cached_row.get("candidate") == quantization_name
+                and cached_row.get("mode") == mode
+                and cached_row.get("artifact_path") == str(quantization.artifact_path)
+                and cached_row.get("artifact_sha256") == quantization.artifact_sha256
+            ):
+                row = cached_row
+            else:
+                request_base = {
+                    "mode": mode,
+                    "backend": "cpu",
+                    "model_path": str(quantization.artifact_path),
+                    "tokenizer_root": str(study_tokenizer_root(scratchpad)),
+                    "repeat": repeat,
+                    "warmup": warmup,
+                }
+                if mode == "persistent":
+                    summary = runner(
+                        {
+                            **request_base,
+                            "examples": benchmark_examples_payload(examples),
+                        }
+                    )
+                else:
+                    summary = aggregate_coldstart_worker_results(
+                        quantization.artifact_path,
+                        examples,
+                        [
+                            runner(
+                                {
+                                    **request_base,
+                                    "examples": benchmark_examples_payload([example]),
+                                }
+                            )
+                            for example in examples
+                        ],
+                    )
+                row = {
+                    "candidate": quantization_name,
+                    "backend": "cpu",
+                    "mode": mode,
+                    "artifact_path": str(quantization.artifact_path),
+                    "artifact_sha256": quantization.artifact_sha256,
+                    **summary,
+                }
+
+            completed_rows.append(row)
+            partial_rows = sorted(completed_rows, key=benchmark_result_sort_key)
+            partial_payload = benchmark_payload(
+                examples=examples,
+                mode=mode,
+                repeat=repeat,
+                warmup=warmup,
+                rows=partial_rows,
+            )
+            write_json(partial_json_path, partial_payload)
+            write_benchmark_csv(partial_csv_path, partial_rows)
+
+        final_rows = sorted(completed_rows, key=benchmark_result_sort_key)
+        write_json(prefix.with_suffix(".json"), benchmark_payload(
+            examples=examples,
+            mode=mode,
+            repeat=repeat,
+            warmup=warmup,
+            rows=final_rows,
+        ))
+        write_benchmark_csv(prefix.with_suffix(".csv"), final_rows)
+        partial_json_path.unlink(missing_ok=True)
+        partial_csv_path.unlink(missing_ok=True)
+        return prefix.with_suffix(".csv")
+    finally:
+        connection.close()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -351,6 +1007,16 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="Overwrite/rebuild existing outputs where supported.",
+    )
+    parser.add_argument(
+        "--internal-benchmark-worker",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--internal-benchmark-request",
+        default="",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args()
 
@@ -2211,6 +2877,13 @@ def evaluate_vs_reference(quantized_model_path: pathlib.Path, eval_tsv: pathlib.
 
 def main() -> int:
     args = parse_args()
+    if args.internal_benchmark_worker:
+        if not args.internal_benchmark_request:
+            raise RuntimeError("--internal-benchmark-request is required with --internal-benchmark-worker")
+        request = json.loads(args.internal_benchmark_request)
+        print(json.dumps(internal_benchmark_request(request)))
+        return 0
+
     workspace = pathlib.Path(args.workspace).resolve()
     generated_dir = workspace / "generated"
     quantized_model = generated_dir / f"{WINNER_NAME}.onnx"
