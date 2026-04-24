@@ -690,5 +690,264 @@ class ReplicationCpuFinalStudyWorkflowTest(unittest.TestCase):
                 )
 
 
+class ReplicationCpuFinalOrchestrationTest(unittest.TestCase):
+    def test_parse_args_accepts_force_datasets_and_skip_test(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            ["replication_cpu_final.py", "--workspace", "/tmp/work", "--force", "--force-datasets", "--skip-test"],
+        ):
+            args = replication_cpu_final.parse_args()
+
+        self.assertEqual(args.workspace, "/tmp/work")
+        self.assertTrue(args.force)
+        self.assertTrue(args.force_datasets)
+        self.assertTrue(args.skip_test)
+
+    def test_run_attempt4_pipeline_executes_full_flow_and_writes_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = pathlib.Path(tmp_dir) / "workspace"
+            catalog_path = workspace / "catalog.json"
+            catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            catalog_path.write_text("[]\n", encoding="utf-8")
+
+            dataset_manifest = {
+                "calibration_datasets": ["calibration.tsv"],
+                "smoke_datasets": ["hf-probe-set.tsv", "hf-core-probe.tsv"],
+                "validation_datasets": ["dev-a.tsv", "dev-b.tsv"],
+                "test_datasets": ["test-a.tsv"],
+                "stress_datasets": ["stress-a.tsv"],
+            }
+            reports_dir = workspace / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            datasets_manifest_path = reports_dir / "attempt4-datasets-manifest.json"
+            datasets_manifest_path.write_text(json.dumps(dataset_manifest) + "\n", encoding="utf-8")
+
+            call_log: list[tuple[str, str, str]] = []
+
+            def fake_run_study_evaluation(
+                scratchpad_root,
+                quantization_name,
+                dataset_name,
+                *,
+                backend="cpu",
+                force_regenerate=False,
+                force_rerun=False,
+                predictor_factory=None,
+            ) -> int:
+                del predictor_factory
+                self.assertEqual(pathlib.Path(scratchpad_root), workspace.resolve())
+                self.assertEqual(backend, "cpu")
+                self.assertFalse(force_regenerate)
+                self.assertFalse(force_rerun)
+                call_log.append(("eval", quantization_name, dataset_name))
+                return len(call_log)
+
+            def fake_summarize(
+                scratchpad_root,
+                *,
+                db_path=None,
+                dataset_names=None,
+                roles=None,
+                backends=None,
+                output_prefix,
+            ):
+                del db_path, dataset_names
+                self.assertEqual(pathlib.Path(scratchpad_root), workspace.resolve())
+                self.assertEqual(backends, ["cpu"])
+                rows = [{"quantization": "candidate_a", "dataset": name} for name in dataset_manifest["validation_datasets"]]
+                if roles == ["fidelity_test"]:
+                    rows = [{"quantization": "candidate_a", "dataset": "test-a.tsv"}]
+                if roles == ["stress_test"]:
+                    rows = [{"quantization": "candidate_a", "dataset": "stress-a.tsv"}]
+                pathlib.Path(output_prefix).with_suffix(".json").write_text(
+                    json.dumps({"rows": rows}) + "\n",
+                    encoding="utf-8",
+                )
+                return []
+
+            benchmark_outputs = {
+                "persistent": reports_dir / "attempt4-validation-cpu-persistent.csv",
+                "coldstart": reports_dir / "attempt4-test-cpu-cold.csv",
+            }
+            report_results = iter(
+                [
+                    {
+                        "paths": {
+                            "candidate_json": reports_dir / "attempt4-cpu-summary.json",
+                            "candidate_csv": reports_dir / "attempt4-cpu-summary.csv",
+                            "per_dataset_json": reports_dir / "attempt4-cpu-summary-per-dataset.json",
+                            "per_dataset_csv": reports_dir / "attempt4-cpu-summary-per-dataset.csv",
+                            "per_language_json": reports_dir / "attempt4-cpu-summary-per-language.json",
+                            "per_language_csv": reports_dir / "attempt4-cpu-summary-per-language.csv",
+                            "report_markdown": reports_dir / "attempt4-cpu-summary.md",
+                        },
+                        "locked_quantizations": ["candidate_a"],
+                    },
+                    {
+                        "paths": {
+                            "candidate_json": reports_dir / "attempt4-cpu-summary.json",
+                            "candidate_csv": reports_dir / "attempt4-cpu-summary.csv",
+                            "per_dataset_json": reports_dir / "attempt4-cpu-summary-per-dataset.json",
+                            "per_dataset_csv": reports_dir / "attempt4-cpu-summary-per-dataset.csv",
+                            "per_language_json": reports_dir / "attempt4-cpu-summary-per-language.json",
+                            "per_language_csv": reports_dir / "attempt4-cpu-summary-per-language.csv",
+                            "report_markdown": reports_dir / "attempt4-cpu-summary.md",
+                        },
+                        "locked_quantizations": ["candidate_a"],
+                    },
+                ]
+            )
+
+            with (
+                mock.patch.object(replication_cpu_final, "prepare_attempt4_datasets", return_value=datasets_manifest_path) as prepare_datasets,
+                mock.patch.object(replication_cpu_final, "stage_runtime_assets") as stage_assets,
+                mock.patch.object(replication_cpu_final, "initialize_study_workspace") as initialize_workspace,
+                mock.patch.object(replication_cpu_final, "verify_role_assignments") as verify_roles,
+                mock.patch.object(replication_cpu_final, "catalog_quantization_names", return_value=["reference", "candidate_a"]),
+                mock.patch.object(replication_cpu_final, "run_study_evaluation", side_effect=fake_run_study_evaluation),
+                mock.patch.object(replication_cpu_final, "summarize_study_db_to_prefix", side_effect=fake_summarize) as summarize_db,
+                mock.patch.object(replication_cpu_final, "complete_quantizations", return_value=["candidate_a"]) as complete_quantizations,
+                mock.patch.object(
+                    replication_cpu_final,
+                    "benchmark_runtime_phase",
+                    side_effect=lambda scratchpad_root, mode, quantizations, output_prefix: benchmark_outputs[mode],
+                ) as benchmark_phase,
+                mock.patch.object(replication_cpu_final, "build_attempt4_cpu_report", side_effect=lambda *args, **kwargs: next(report_results)) as build_report,
+            ):
+                manifest = replication_cpu_final.run_attempt4_pipeline(
+                    workspace,
+                    catalog_path=catalog_path,
+                )
+
+            prepare_datasets.assert_called_once_with(workspace.resolve(), False)
+            stage_assets.assert_called_once_with(workspace.resolve())
+            initialize_workspace.assert_called_once_with(workspace.resolve(), catalog_path=catalog_path.resolve(), force=False)
+            verify_roles.assert_called_once()
+            complete_quantizations.assert_called_once()
+            self.assertEqual([call.kwargs["roles"] for call in summarize_db.call_args_list], [["fidelity_validation"], ["fidelity_test"], ["stress_test"]])
+            self.assertEqual(
+                [call.args[1] for call in benchmark_phase.call_args_list],
+                ["persistent", "coldstart"],
+            )
+            self.assertEqual(
+                call_log,
+                [
+                    ("eval", "reference", "hf-probe-set.tsv"),
+                    ("eval", "reference", "hf-core-probe.tsv"),
+                    ("eval", "reference", "dev-a.tsv"),
+                    ("eval", "reference", "dev-b.tsv"),
+                    ("eval", "candidate_a", "hf-probe-set.tsv"),
+                    ("eval", "candidate_a", "hf-core-probe.tsv"),
+                    ("eval", "candidate_a", "dev-a.tsv"),
+                    ("eval", "candidate_a", "dev-b.tsv"),
+                    ("eval", "candidate_a", "test-a.tsv"),
+                    ("eval", "candidate_a", "stress-a.tsv"),
+                ],
+            )
+            self.assertEqual(manifest["locked_quantizations"], ["candidate_a"])
+            self.assertEqual(manifest["validation_complete_quantizations"], ["candidate_a"])
+            self.assertEqual(manifest["validation_runtime_csv"], str(benchmark_outputs["persistent"]))
+            self.assertEqual(manifest["cold_benchmark_csv"], str(benchmark_outputs["coldstart"]))
+            self.assertEqual(manifest["final_report"], str(reports_dir / "attempt4-cpu-summary.json"))
+            self.assertIn("test_summary", manifest)
+            self.assertIn("stress_summary", manifest)
+
+            written_manifest = json.loads((reports_dir / "attempt4-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(written_manifest["locked_quantizations"], ["candidate_a"])
+            self.assertEqual(written_manifest["report_artifacts"]["candidate_json"], str(reports_dir / "attempt4-cpu-summary.json"))
+
+    def test_run_attempt4_pipeline_skip_test_stops_after_interim_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = pathlib.Path(tmp_dir) / "workspace"
+            catalog_path = workspace / "catalog.json"
+            catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            catalog_path.write_text("[]\n", encoding="utf-8")
+
+            dataset_manifest = {
+                "calibration_datasets": [],
+                "smoke_datasets": ["hf-core-probe.tsv"],
+                "validation_datasets": ["dev-a.tsv"],
+                "test_datasets": ["test-a.tsv"],
+                "stress_datasets": ["stress-a.tsv"],
+            }
+            reports_dir = workspace / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            datasets_manifest_path = reports_dir / "attempt4-datasets-manifest.json"
+            datasets_manifest_path.write_text(json.dumps(dataset_manifest) + "\n", encoding="utf-8")
+
+            report_result = {
+                "paths": {
+                    "candidate_json": reports_dir / "attempt4-cpu-summary.json",
+                    "candidate_csv": reports_dir / "attempt4-cpu-summary.csv",
+                    "per_dataset_json": reports_dir / "attempt4-cpu-summary-per-dataset.json",
+                    "per_dataset_csv": reports_dir / "attempt4-cpu-summary-per-dataset.csv",
+                    "per_language_json": reports_dir / "attempt4-cpu-summary-per-language.json",
+                    "per_language_csv": reports_dir / "attempt4-cpu-summary-per-language.csv",
+                    "report_markdown": reports_dir / "attempt4-cpu-summary.md",
+                },
+                "locked_quantizations": ["candidate_a"],
+            }
+
+            with (
+                mock.patch.object(replication_cpu_final, "prepare_attempt4_datasets", return_value=datasets_manifest_path),
+                mock.patch.object(replication_cpu_final, "stage_runtime_assets"),
+                mock.patch.object(replication_cpu_final, "initialize_study_workspace"),
+                mock.patch.object(replication_cpu_final, "verify_role_assignments"),
+                mock.patch.object(replication_cpu_final, "catalog_quantization_names", return_value=["candidate_a"]),
+                mock.patch.object(replication_cpu_final, "run_study_evaluation") as run_study_evaluation,
+                mock.patch.object(replication_cpu_final, "summarize_study_db_to_prefix") as summarize_db,
+                mock.patch.object(replication_cpu_final, "complete_quantizations", return_value=["candidate_a"]),
+                mock.patch.object(replication_cpu_final, "benchmark_runtime_phase", return_value=reports_dir / "attempt4-validation-cpu-persistent.csv") as benchmark_phase,
+                mock.patch.object(replication_cpu_final, "build_attempt4_cpu_report", return_value=report_result) as build_report,
+            ):
+                manifest = replication_cpu_final.run_attempt4_pipeline(
+                    workspace,
+                    catalog_path=catalog_path,
+                    skip_test=True,
+                    force=True,
+                    force_datasets=True,
+                )
+
+            self.assertEqual(run_study_evaluation.call_count, 2)
+            self.assertEqual(summarize_db.call_count, 1)
+            benchmark_phase.assert_called_once()
+            build_report.assert_called_once()
+            self.assertEqual(manifest["final_report"], str(reports_dir / "attempt4-cpu-summary.json"))
+            self.assertNotIn("test_summary", manifest)
+            self.assertNotIn("stress_summary", manifest)
+            self.assertNotIn("cold_benchmark_csv", manifest)
+
+    def test_main_routes_non_internal_execution_through_attempt4_pipeline(self) -> None:
+        with (
+            mock.patch.object(
+                replication_cpu_final,
+                "parse_args",
+                return_value=mock.Mock(
+                    workspace="/tmp/workspace",
+                    force=True,
+                    force_datasets=False,
+                    skip_test=True,
+                    internal_benchmark_worker=False,
+                    internal_benchmark_request="",
+                ),
+            ),
+            mock.patch.object(
+                replication_cpu_final,
+                "run_attempt4_pipeline",
+                return_value={"scratchpad_root": "/tmp/workspace"},
+            ) as run_pipeline,
+        ):
+            exit_code = replication_cpu_final.main()
+
+        self.assertEqual(exit_code, 0)
+        run_pipeline.assert_called_once_with(
+            "/tmp/workspace",
+            force=True,
+            force_datasets=False,
+            skip_test=True,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
-"""Minimal, standalone replication script for the final CPU winner.
+"""Standalone Python runner for the bounded attempt4 CPU replication workflow.
 
-This script intentionally focuses on a *single* objective:
+This script is the public entrypoint for the resumable Python-only attempt4 flow:
 
-1. Prepare the attempt4 dataset workspace needed by the current winner-only flow.
-2. Recompute the final CPU winner candidate (`nncf_accuracy_attention_only`) from
-   the float model.
-3. Evaluate the recomputed candidate versus the float reference model.
+1. Prepare the bounded attempt4 dataset pack.
+2. Initialize or refresh the SQLite study workspace and runtime assets.
+3. Materialize or reuse bounded catalog artifacts and evaluate them on CPU.
+4. Benchmark complete candidates, build partial/final reports, and write the
+   attempt4 manifest without invoking the legacy C++ study binaries.
 """
 
 from __future__ import annotations
@@ -2075,19 +2076,29 @@ def benchmark_runtime_phase(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare the final CPU replication datasets, recompute the winning "
-            "quantization recipe, and compare it against the float reference model."
+            "Run the bounded attempt4 CPU deployment study end-to-end using the "
+            "Python-only replication workflow."
         )
     )
     parser.add_argument(
         "--workspace",
         default=str(REPO_ROOT / "scratchpad" / "replication_cpu_final"),
-        help="Directory for generated quantized model, datasets, manifests, and logs.",
+        help="Directory for generated datasets, manifests, reports, and logs.",
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help="Overwrite/rebuild existing outputs where supported.",
+    )
+    parser.add_argument(
+        "--force-datasets",
+        action="store_true",
+        help="Regenerate the bounded attempt4 dataset pack instead of reusing local files.",
+    )
+    parser.add_argument(
+        "--skip-test",
+        action="store_true",
+        help="Stop after the interim report and locked-candidate selection.",
     )
     parser.add_argument(
         "--internal-benchmark-worker",
@@ -3279,6 +3290,64 @@ def initialize_study_workspace(
     return db_path
 
 
+def catalog_quantization_names(
+    catalog_path: pathlib.Path | str = DEFAULT_STUDY_CATALOG_PATH,
+) -> list[str]:
+    return [entry.name for entry in load_study_catalog(resolve_absolute_path(catalog_path))]
+
+
+def complete_quantizations(
+    summary_json_path: pathlib.Path | str,
+    required_datasets: Sequence[str],
+) -> list[str]:
+    payload = read_json(summary_json_path)
+    rows = payload.get("rows")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"Summary JSON does not contain a row list: {summary_json_path}")
+
+    required_dataset_set = set(required_datasets)
+    grouped: dict[str, set[str]] = {}
+    for row in rows:
+        quantization = str(row["quantization"])
+        grouped.setdefault(quantization, set()).add(str(row["dataset"]))
+
+    return sorted(
+        quantization
+        for quantization, datasets in grouped.items()
+        if datasets == required_dataset_set
+    )
+
+
+def verify_role_assignments(
+    scratchpad_root: pathlib.Path | str,
+    expected: dict[str, Sequence[str]],
+) -> None:
+    scratchpad = resolve_absolute_path(scratchpad_root)
+    connection = open_study_connection(scratchpad / "db.sqlite3")
+    try:
+        rows = connection.execute("SELECT name, role FROM dataset ORDER BY name").fetchall()
+    finally:
+        connection.close()
+
+    actual_by_role: dict[str, list[str]] = {}
+    for name, role in rows:
+        actual_by_role.setdefault(str(role), []).append(str(name))
+
+    for role, expected_names in expected.items():
+        actual_names = sorted(actual_by_role.get(role, []))
+        if sorted(expected_names) != actual_names:
+            raise RuntimeError(
+                f"Dataset-role mismatch for {role}: expected {sorted(expected_names)}, got {actual_names}"
+            )
+
+
+def report_artifact_paths(
+    report_result: dict[str, Any],
+) -> dict[str, str]:
+    paths = dict(report_result["paths"])
+    return {name: str(path) for name, path in paths.items()}
+
+
 def resolve_path_argument(argument: str) -> str:
     if not argument or argument.startswith("-"):
         return argument
@@ -3891,69 +3960,170 @@ def run_study_evaluation(
     )
 
 
-def winner_dataset_paths(workspace: pathlib.Path) -> tuple[list[pathlib.Path], list[pathlib.Path], pathlib.Path]:
-    dataset_dir = workspace / "datasets"
-    calibration_paths = [dataset_dir / name for name in WINNER_CALIBRATION_DATASET_FILENAMES]
-    validation_paths = [dataset_dir / name for name in WINNER_VALIDATION_DATASET_FILENAMES]
-    eval_path = dataset_dir / WINNER_EVAL_DATASET_FILENAME
-    return calibration_paths, validation_paths, eval_path
+def run_attempt4_pipeline(
+    workspace: pathlib.Path | str,
+    *,
+    catalog_path: pathlib.Path | str = DEFAULT_STUDY_CATALOG_PATH,
+    force: bool = False,
+    force_datasets: bool = False,
+    skip_test: bool = False,
+) -> dict[str, object]:
+    scratchpad_root = resolve_absolute_path(workspace)
+    resolved_catalog_path = resolve_absolute_path(catalog_path)
+    if not resolved_catalog_path.is_file():
+        raise FileNotFoundError(f"Study catalog not found: {resolved_catalog_path}")
 
+    scratchpad_root.mkdir(parents=True, exist_ok=True)
+    reports_root = scratchpad_root / "reports"
+    reports_root.mkdir(parents=True, exist_ok=True)
 
-def quantize_winner_model(
-    output_model_path: pathlib.Path,
-    calibration_paths: list[pathlib.Path],
-    validation_paths: list[pathlib.Path],
-    force: bool,
-) -> None:
-    output_model_path.parent.mkdir(parents=True, exist_ok=True)
-
-    command = [
-        sys.executable,
-        str(REPO_ROOT / "tools" / "quantize-onnx-nncf.py"),
-        "--input",
-        str(REPO_ROOT / "models" / "mdeberta" / "onnx" / "model.onnx"),
-        "--output",
-        str(output_model_path),
-        "--mode",
-        "accuracy-control",
-        "--metric",
-        "gold_accuracy",
-        "--preset",
-        "mixed",
-        "--subset-size",
-        "300",
-        "--ignored-scope-family",
-        "attention_only",
-        "--max-drop",
-        "0.01",
-        "--preprocess",
-        "--fast-bias-correction",
-        "--install-deps",
-    ]
-
-    for tsv in calibration_paths:
-        command.extend(["--calibration-tsv", str(tsv)])
-    for tsv in validation_paths:
-        command.extend(["--validation-tsv", str(tsv)])
-    if force:
-        command.append("--force")
-
-    run(command)
-
-
-def evaluate_vs_reference(quantized_model_path: pathlib.Path, eval_tsv: pathlib.Path) -> None:
-    run(
-        [
-            str(REPO_ROOT / "builddir" / "nli-eval"),
-            "-b",
-            "cpu",
-            "--model",
-            str(quantized_model_path),
-            "--compare-model",
-            str(REPO_ROOT / "models" / "mdeberta" / "onnx" / "model.onnx"),
-            str(eval_tsv),
-        ]
+    datasets_manifest_path = prepare_attempt4_datasets(scratchpad_root, force_datasets)
+    dataset_manifest = dict(read_json(datasets_manifest_path))
+    stage_runtime_assets(scratchpad_root)
+    initialize_study_workspace(
+        scratchpad_root,
+        catalog_path=resolved_catalog_path,
+        force=force,
     )
+    verify_role_assignments(
+        scratchpad_root,
+        {
+            "calibration": list(dataset_manifest["calibration_datasets"]),
+            "smoke": list(dataset_manifest["smoke_datasets"]),
+            "fidelity_validation": list(dataset_manifest["validation_datasets"]),
+            "fidelity_test": list(dataset_manifest["test_datasets"]),
+            "stress_test": list(dataset_manifest["stress_datasets"]),
+        },
+    )
+
+    quantizations = catalog_quantization_names(resolved_catalog_path)
+    development_datasets = [
+        *list(dataset_manifest["smoke_datasets"]),
+        *list(dataset_manifest["validation_datasets"]),
+    ]
+    print("Running smoke and development evaluation for the bounded CPU catalog.", flush=True)
+    for quantization in quantizations:
+        for dataset_name in development_datasets:
+            run_study_evaluation(
+                scratchpad_root,
+                quantization,
+                dataset_name,
+                backend="cpu",
+                force_regenerate=force,
+                force_rerun=force,
+            )
+
+    validation_summary_prefix = reports_root / "attempt4-validation-summary"
+    summarize_study_db_to_prefix(
+        scratchpad_root,
+        roles=["fidelity_validation"],
+        backends=["cpu"],
+        output_prefix=validation_summary_prefix,
+    )
+    validation_summary_path = validation_summary_prefix.with_suffix(".json")
+    validation_complete = complete_quantizations(
+        validation_summary_path,
+        list(dataset_manifest["validation_datasets"]),
+    )
+
+    print("Benchmarking complete development candidates on persistent CPU runtime and RSS.", flush=True)
+    validation_runtime_csv_path = benchmark_runtime_phase(
+        scratchpad_root,
+        "persistent",
+        validation_complete,
+        reports_root / "attempt4-validation-cpu-persistent",
+    )
+
+    report_output_prefix = reports_root / "attempt4-cpu-summary"
+    report_result = build_attempt4_cpu_report(
+        datasets_manifest_path,
+        validation_summary_path,
+        validation_runtime_csv_path,
+        report_output_prefix,
+    )
+    locked_quantizations = list(report_result["locked_quantizations"])
+
+    manifest: dict[str, object] = {
+        "scratchpad_root": str(scratchpad_root),
+        "catalog": str(resolved_catalog_path),
+        "validation_complete_quantizations": validation_complete,
+        "locked_quantizations": locked_quantizations,
+        "datasets_manifest": str(datasets_manifest_path),
+        "validation_summary": str(validation_summary_path),
+        "validation_runtime_csv": str(validation_runtime_csv_path),
+        "report_artifacts": report_artifact_paths(report_result),
+    }
+
+    if skip_test:
+        print("Skipping final test and stress evaluation because --skip-test was requested.", flush=True)
+        manifest["final_report"] = str(report_result["paths"]["candidate_json"])
+    else:
+        print("Running locked final-test and stress-test evaluation.", flush=True)
+        for dataset_name in dataset_manifest["test_datasets"]:
+            for quantization in locked_quantizations:
+                run_study_evaluation(
+                    scratchpad_root,
+                    quantization,
+                    dataset_name,
+                    backend="cpu",
+                    force_regenerate=force,
+                    force_rerun=force,
+                )
+        for dataset_name in dataset_manifest["stress_datasets"]:
+            for quantization in locked_quantizations:
+                run_study_evaluation(
+                    scratchpad_root,
+                    quantization,
+                    dataset_name,
+                    backend="cpu",
+                    force_regenerate=force,
+                    force_rerun=force,
+                )
+
+        test_summary_prefix = reports_root / "attempt4-test-summary"
+        summarize_study_db_to_prefix(
+            scratchpad_root,
+            roles=["fidelity_test"],
+            backends=["cpu"],
+            output_prefix=test_summary_prefix,
+        )
+        test_summary_path = test_summary_prefix.with_suffix(".json")
+
+        stress_summary_prefix = reports_root / "attempt4-stress-summary"
+        summarize_study_db_to_prefix(
+            scratchpad_root,
+            roles=["stress_test"],
+            backends=["cpu"],
+            output_prefix=stress_summary_prefix,
+        )
+        stress_summary_path = stress_summary_prefix.with_suffix(".json")
+
+        cold_benchmark_csv_path = benchmark_runtime_phase(
+            scratchpad_root,
+            "coldstart",
+            locked_quantizations,
+            reports_root / "attempt4-test-cpu-cold",
+        )
+
+        report_result = build_attempt4_cpu_report(
+            datasets_manifest_path,
+            validation_summary_path,
+            validation_runtime_csv_path,
+            report_output_prefix,
+            test_summary_path=test_summary_path,
+            stress_summary_path=stress_summary_path,
+            cold_benchmark_path=cold_benchmark_csv_path,
+        )
+        manifest["test_summary"] = str(test_summary_path)
+        manifest["stress_summary"] = str(stress_summary_path)
+        manifest["cold_benchmark_csv"] = str(cold_benchmark_csv_path)
+        manifest["final_report"] = str(report_result["paths"]["candidate_json"])
+        manifest["report_artifacts"] = report_artifact_paths(report_result)
+
+    manifest_path = reports_root / "attempt4-manifest.json"
+    write_json(manifest_path, manifest)
+    print(f"manifest: {manifest_path}", flush=True)
+    return manifest
 
 
 def main() -> int:
@@ -3965,22 +4135,15 @@ def main() -> int:
         print(json.dumps(internal_benchmark_request(request)))
         return 0
 
-    workspace = pathlib.Path(args.workspace).resolve()
-    generated_dir = workspace / "generated"
-    quantized_model = generated_dir / f"{WINNER_NAME}.onnx"
-
-    ensure_binaries_built()
-    download_model_assets(force=args.force)
-    manifest_path = prepare_attempt4_datasets(workspace, args.force)
-    calibration_tsvs, validation_tsvs, eval_tsv = winner_dataset_paths(workspace)
-    quantize_winner_model(quantized_model, calibration_tsvs, validation_tsvs, force=args.force)
-    evaluate_vs_reference(quantized_model, eval_tsv)
-
+    manifest = run_attempt4_pipeline(
+        args.workspace,
+        force=args.force,
+        force_datasets=args.force_datasets,
+        skip_test=args.skip_test,
+    )
     print("\nDone.")
-    print(f"workspace: {workspace}")
-    print(f"manifest: {manifest_path}")
-    print(f"winner_model: {quantized_model}")
-    print(f"eval_tsv: {eval_tsv}")
+    print(f"workspace: {manifest['scratchpad_root']}")
+    print(f"manifest: {pathlib.Path(str(manifest['scratchpad_root'])) / 'reports' / 'attempt4-manifest.json'}")
     return 0
 
 
